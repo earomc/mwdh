@@ -2,8 +2,9 @@ use anyhow::{Context, Result};
 use futures_util::TryStreamExt;
 use http_body_util::combinators::BoxBody;
 use std::fs::File;
-use std::net::SocketAddr;
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::process;
+use std::str::FromStr;
 use std::sync::Arc;
 use tokio_util::io::ReaderStream;
 
@@ -31,12 +32,10 @@ pub struct Args {
     pub path: String,
 
     /// Include the Nether dimension ("world_nether")
-    /// Short flag: -n   Combined: -ne
     #[arg(short = 'n', long = "include-nether", default_value_t = false)]
     pub include_nether: bool,
 
     /// Include the End dimension ("world_the_end")
-    /// Short flag: -e   Combined: -ne
     #[arg(short = 'e', long = "include-end", default_value_t = false)]
     pub include_end: bool,
 
@@ -44,9 +43,13 @@ pub struct Args {
     #[arg(short = 'o', long = "output-file", default_value = "world")]
     pub download_file_name: String,
 
-    /// Host path from where to download the world files (default is /world)
+    /// Host path from where to download the world files
     #[arg(short = 'H', long = "host-path", default_value = "world")]
     pub host_path: String,
+
+    /// IP address to serve on
+    #[arg(long = "host-ip", default_value = "0.0.0.0")]
+    pub host_ip: String,
 
     /// Port to serve on
     #[arg(short = 'P', long = "port", default_value_t = 3000)]
@@ -91,7 +94,7 @@ async fn run_server(args: Args) -> Result<(), Box<dyn std::error::Error + Send +
         .await
         .context("Failed to generate ZIP file")?;
 
-    let addr = SocketAddr::from(([127, 0, 0, 1], args.port));
+    let addr = SocketAddr::from_str(&format!("{}:{}", args.host_ip, args.port))?;
     let listener = TcpListener::bind(addr).await?;
     println!("Hosting world files at {}/{}", addr, args.host_path);
 
