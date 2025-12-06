@@ -2,6 +2,8 @@ use std::convert::Infallible;
 use std::net::SocketAddr;
 use std::process;
 
+use anyhow::{Context, Result};
+
 use http_body_util::Full;
 use hyper::body::Bytes;
 use hyper::header::{CONTENT_DISPOSITION, CONTENT_TYPE};
@@ -10,12 +12,12 @@ use hyper::service::service_fn;
 use hyper::{Request, Response, StatusCode};
 use hyper_util::rt::TokioIo;
 use std::io::Write;
+use std::path::{Path, PathBuf};
 use tokio::fs::File;
+use tokio::fs::{self};
 use tokio::io::AsyncReadExt;
 use tokio::net::TcpListener;
 use zip::write::SimpleFileOptions;
-use tokio::fs::{self};
-use std::path::{Path, PathBuf};
 
 use clap::Parser;
 
@@ -35,7 +37,7 @@ pub struct Args {
     /// Short flag: -e   Combined: -ne
     #[arg(short = 'e', long = "include-end", default_value_t = false)]
     pub include_end: bool,
-    
+
     /// Specify the output file name - Note: (mwdh will append '.zip' to it)
     #[arg(short = 'o', long = "output-file", default_value = "world")]
     pub output_file_name: String,
@@ -79,6 +81,22 @@ async fn serve_multiple_paths_zipped(
     paths: Vec<PathBuf>,
     file_name: &str,
 ) -> Result<Response<Full<Bytes>>, Infallible> {
+    match try_serve_multiple_paths_zipped(paths, file_name).await {
+        Ok(resp) => Ok(resp),
+        Err(err) => {
+            eprintln!("ZIP generation error: {err:#}");
+            let mut resp = Response::new(Full::new(Bytes::from("Failed to generate ZIP")));
+            *resp.status_mut() = StatusCode::INTERNAL_SERVER_ERROR;
+            Ok(resp)
+        }
+    }
+}
+
+async fn try_serve_multiple_paths_zipped(
+    paths: Vec<PathBuf>,
+    file_name: &str,
+) -> Result<Response<Full<Bytes>>> {
+
     let mut zip_buf = Vec::new();
     let cursor = std::io::Cursor::new(&mut zip_buf);
     let mut zip = zip::ZipWriter::new(cursor);
@@ -88,17 +106,23 @@ async fn serve_multiple_paths_zipped(
         .large_file(true);
 
     for path in paths {
-        println!("Adding {}", path.to_string_lossy());
-        let name = path.file_name().unwrap().to_string_lossy().to_string();
-        if let Ok(meta) = fs::metadata(&path).await {
-            if meta.is_file() {
-                add_single_file(&mut zip, &path, &name, options).await?;
-            } else {
-                add_directory_iterative(&mut zip, &path, &name, options).await?;
-            }
+        let name = path.file_name()
+            .ok_or_else(|| anyhow::anyhow!("Invalid path (no filename): {}", path.display()))?
+            .to_string_lossy();
+
+        let meta = fs::metadata(&path)
+            .await
+            .with_context(|| format!("Failed to stat path: {}", path.display()))?;
+
+        if meta.is_file() {
+            add_single_file(&mut zip, &path, &name, options).await?;
+        } else {
+            add_directory_iterative(&mut zip, &path, &name, options).await?;
         }
     }
-    zip.finish().unwrap();
+
+    zip.finish().context("Failed to finish ZIP")?;
+
     let mut resp = Response::new(Full::new(Bytes::from(zip_buf)));
     resp.headers_mut()
         .insert(CONTENT_TYPE, "application/zip".parse().unwrap());
@@ -108,8 +132,10 @@ async fn serve_multiple_paths_zipped(
             .parse()
             .unwrap(),
     );
+
     Ok(resp)
 }
+
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
@@ -165,21 +191,21 @@ async fn add_single_file(
     src_path: &Path,
     zip_path: &str,
     options: SimpleFileOptions,
-) -> Result<(), Infallible> {
-    // TODO: Improve error handling
-    let mut file = match File::open(src_path).await {
-        Ok(f) => f,
-        Err(_) => return Ok(()),
-    };
+) -> Result<()> {
+    let mut file = File::open(src_path)
+        .await
+        .with_context(|| format!("Failed to open file: {}", src_path.display()))?;
 
     let mut buf = Vec::new();
-    if let Err(e) = file.read_to_end(&mut buf).await {
-        eprintln!("Error reading file {src_path:?}: {e}");
-        return Ok(());
-    }
+    file.read_to_end(&mut buf)
+        .await
+        .with_context(|| format!("Failed to read file: {}", src_path.display()))?;
 
-    zip.start_file(zip_path, options).unwrap();
-    zip.write_all(&buf).unwrap();
+    zip.start_file(zip_path, options)
+        .with_context(|| format!("Failed to start ZIP file entry: {zip_path}"))?;
+
+    zip.write_all(&buf)
+        .with_context(|| format!("Failed writing file into ZIP: {zip_path}"))?;
 
     Ok(())
 }
@@ -189,38 +215,36 @@ async fn add_directory_iterative(
     base_dir: &Path,
     zip_prefix: &str,
     options: SimpleFileOptions,
-) -> Result<(), Infallible> {
+) -> Result<()> {
     // Stack of (filesystem path, path inside zip)
     let mut stack = vec![(base_dir.to_path_buf(), zip_prefix.to_string())];
 
     while let Some((curr_fs_path, curr_zip_path)) = stack.pop() {
-        let mut read_dir = match fs::read_dir(&curr_fs_path).await {
-            Ok(rd) => rd,
-            Err(err) => {
-                eprintln!("ERR: {}, skipping dir", err);
-                continue;
-            }
-        };
+        let mut read_dir = fs::read_dir(&curr_fs_path)
+            .await
+            .with_context(|| format!("Failed to read directory: {}", curr_fs_path.display()))?;
 
-        // Add the directory itself to the ZIP (optional)
-        zip.add_directory(&curr_zip_path, options).unwrap();
+        zip.add_directory(&curr_zip_path, options)
+            .with_context(|| format!("Failed to add directory to ZIP: {curr_zip_path}"))?;
 
-        while let Ok(Some(entry)) = read_dir.next_entry().await {
+        while let Some(entry) = read_dir
+            .next_entry()
+            .await
+            .context("Failed to iterate directory")?
+        {
             let path = entry.path();
             let name = entry.file_name().to_string_lossy().to_string();
             let child_zip_path = format!("{}/{}", curr_zip_path, name);
 
-            match entry.metadata().await {
-                Ok(meta) if meta.is_dir() => {
-                    // Push directory into stack
-                    stack.push((path, child_zip_path));
-                }
+            let meta = entry
+                .metadata()
+                .await
+                .with_context(|| format!("Failed to read metadata: {}", path.display()))?;
 
-                Ok(meta) if meta.is_file() => {
-                    add_single_file(zip, &path, &child_zip_path, options).await?;
-                }
-
-                _ => {}
+            if meta.is_dir() {
+                stack.push((path, child_zip_path));
+            } else if meta.is_file() {
+                add_single_file(zip, &path, &child_zip_path, options).await?;
             }
         }
     }
