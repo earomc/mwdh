@@ -2,7 +2,7 @@ use anyhow::{Context, Result};
 use futures_util::TryStreamExt;
 use http_body_util::combinators::BoxBody;
 use std::fs::File;
-use std::net::{SocketAddr};
+use std::net::SocketAddr;
 use std::process;
 use std::str::FromStr;
 use std::sync::Arc;
@@ -23,6 +23,8 @@ use zip::ZipWriter;
 use zip::write::SimpleFileOptions;
 
 use clap::Parser;
+use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
+use std::sync::mpsc;
 
 #[derive(Parser, Debug)]
 #[command(author, version, about)]
@@ -40,7 +42,7 @@ pub struct Args {
     pub include_end: bool,
 
     /// Specify the download file name - Note: (mwdh will append '.zip' to it)
-    #[arg(short = 'o', long = "output-file", default_value = "world")]
+    #[arg(short = 'f', long = "file-name", default_value = "world")]
     pub download_file_name: String,
 
     /// Host path from where to download the world files
@@ -56,6 +58,15 @@ pub struct Args {
     pub port: u16,
 }
 
+#[derive(Debug)]
+enum ProgressMessage {
+    StartScanning,
+    FileFound(String),
+    StartZipping(u64), // total files
+    FileProcessed(String, u64), // filename, current count
+    Complete,
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let args = Args::parse();
@@ -68,8 +79,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         eprintln!("ERR: Path should be a directory");
         process::exit(1);
     }
-    let full_path = fs::canonicalize(&path).await.unwrap_or(path.into()); // if canonicalization fails, use the relative path
-    println!("(Server) directory: {}", full_path.to_string_lossy());
+    let full_path = fs::canonicalize(&path).await.unwrap_or(path.into());
+    println!("(Server) worlds directory: {}", full_path.to_string_lossy());
     println!("Include Nether: {}", args.include_nether);
     println!("Include End: {}", args.include_end);
     println!("Output file name: {}.zip", args.download_file_name);
@@ -81,7 +92,6 @@ async fn run_server(args: Args) -> Result<(), Box<dyn std::error::Error + Send +
     let base = PathBuf::from(&args.path);
     let mut paths_to_zip = vec![base.join("world")];
 
-    // Add optional dimension folders
     if args.include_nether {
         paths_to_zip.push(base.join("world_nether"));
     }
@@ -89,16 +99,15 @@ async fn run_server(args: Args) -> Result<(), Box<dyn std::error::Error + Send +
         paths_to_zip.push(base.join("world_the_end"));
     }
 
-    // Generate and save the ZIP file when the server starts
-    generate_zip(paths_to_zip, zip_file_path.clone())
+    // Generate ZIP with progress updates
+    generate_zip_with_progress(paths_to_zip, zip_file_path.clone())
         .await
         .context("Failed to generate ZIP file")?;
 
     let addr = SocketAddr::from_str(&format!("{}:{}", args.host_ip, args.port))?;
     let listener = TcpListener::bind(addr).await?;
-    println!("Hosting world files at {}/{}", addr, args.host_path);
+    println!("\nHosting world files at {}/{}", addr, args.host_path);
 
-    // Clone the zip file path for the handler closure
     let zip_file_path = std::sync::Arc::new(zip_file_path);
     loop {
         let (stream, _) = listener.accept().await?;
@@ -152,11 +161,7 @@ async fn serve_multiple_paths_zipped(
     match file {
         Ok(file) => {
             let file_size = file.metadata().await?.len();
-
-            // Wrap to a tokio_util::io::ReaderStream
             let reader_stream = ReaderStream::new(file);
-
-            // Convert to http_body_util::BoxBody
             let stream_body = StreamBody::new(reader_stream.map_ok(Frame::data));
             let boxed_body = stream_body.boxed();
 
@@ -189,7 +194,79 @@ async fn serve_multiple_paths_zipped(
     }
 }
 
-pub async fn generate_zip(paths: Vec<PathBuf>, output_path: PathBuf) -> Result<()> {
+async fn generate_zip_with_progress(paths: Vec<PathBuf>, output_path: PathBuf) -> Result<()> {
+    let (tx, rx) = mpsc::channel();
+    
+    // Spawn blocking task for ZIP creation
+    let zip_handle = tokio::task::spawn_blocking(move || {
+        generate_zip_blocking(paths, output_path, tx)
+    });
+
+    // Handle progress updates on main thread
+    let progress_handle = tokio::task::spawn_blocking(move || {
+        let multi = MultiProgress::new();
+        
+        let scan_bar = multi.add(ProgressBar::new_spinner());
+        scan_bar.set_style(
+            ProgressStyle::default_spinner()
+                .template("{spinner:.green} {msg}")
+                .unwrap()
+        );
+        
+        let mut zip_bar: Option<ProgressBar> = None;
+        
+        while let Ok(msg) = rx.recv() {
+            match msg {
+                ProgressMessage::StartScanning => {
+                    scan_bar.set_message("Scanning directories...");
+                }
+                ProgressMessage::FileFound(name) => {
+                    scan_bar.set_message(format!("Found: {}", name));
+                }
+                ProgressMessage::StartZipping(total) => {
+                    scan_bar.finish_with_message(format!("Found {} files", total));
+                    
+                    let pb = multi.add(ProgressBar::new(total));
+                    pb.set_style(
+                        ProgressStyle::default_bar()
+                            .template("{spinner} [{elapsed_precise}] {wide_bar} {percent}% {pos}/{len} (Elapsed: {elapsed_precise}) (ETA: {eta}) {msg}")
+                            .unwrap()
+                    );
+                    zip_bar = Some(pb);
+                }
+                ProgressMessage::FileProcessed(name, current) => {
+                    if let Some(ref pb) = zip_bar {
+                        pb.set_position(current);
+                        pb.set_message(format!("Compressing: {}", 
+                            Path::new(&name)
+                                .file_name()
+                                .unwrap_or_default()
+                                .to_string_lossy()
+                        ));
+                    }
+                }
+                ProgressMessage::Complete => {
+                    if let Some(pb) = zip_bar {
+                        pb.finish_with_message("ZIP file created successfully!");
+                    }
+                    break;
+                }
+            }
+        }
+    });
+
+    // Wait for both tasks
+    zip_handle.await??;
+    progress_handle.await?;
+    
+    Ok(())
+}
+
+fn generate_zip_blocking(
+    paths: Vec<PathBuf>,
+    output_path: PathBuf,
+    tx: mpsc::Sender<ProgressMessage>,
+) -> Result<()> {
     let file = std::fs::File::create(&output_path)?;
     let mut zip = ZipWriter::new(file);
 
@@ -197,86 +274,96 @@ pub async fn generate_zip(paths: Vec<PathBuf>, output_path: PathBuf) -> Result<(
         .compression_method(zip::CompressionMethod::Deflated)
         .large_file(true);
 
-    for path in paths {
+    // First pass: count all files
+    tx.send(ProgressMessage::StartScanning).ok();
+    let mut all_files = Vec::new();
+    
+    for path in &paths {
         let name = path
             .file_name()
-            .ok_or_else(|| anyhow::anyhow!("Invalid path (no filename): {}", path.display()))?
-            .to_string_lossy();
+            .ok_or_else(|| anyhow::anyhow!("Invalid path: {}", path.display()))?
+            .to_string_lossy()
+            .to_string();
 
-        let meta = fs::metadata(&path)
-            .await
-            .with_context(|| format!("Failed to stat path: {}", path.display()))?;
+        let meta = std::fs::metadata(path)
+            .with_context(|| format!("Failed to stat: {}", path.display()))?;
 
         if meta.is_file() {
-            add_single_file(&mut zip, &path, &name, options).await?;
+            all_files.push((path.clone(), name));
+            tx.send(ProgressMessage::FileFound(path.display().to_string())).ok();
         } else {
-            add_directory_iterative(&mut zip, &path, &name, options).await?;
+            collect_files_recursive(path, &name, &mut all_files, &tx)?;
         }
     }
+
+    let total_files = all_files.len() as u64;
+    tx.send(ProgressMessage::StartZipping(total_files)).ok();
+
+    // Second pass: actually zip files
+    for (idx, (path, zip_path)) in all_files.iter().enumerate() {
+        add_file_to_zip(&mut zip, path, zip_path, options)?;
+        tx.send(ProgressMessage::FileProcessed(
+            zip_path.clone(),
+            (idx + 1) as u64
+        )).ok();
+    }
+
     zip.finish().context("Failed to finish ZIP")?;
+    tx.send(ProgressMessage::Complete).ok();
+    
     Ok(())
 }
 
-async fn add_single_file(
+fn collect_files_recursive(
+    base_dir: &Path,
+    zip_prefix: &str,
+    all_files: &mut Vec<(PathBuf, String)>,
+    tx: &mpsc::Sender<ProgressMessage>,
+) -> Result<()> {
+    let mut stack = vec![(base_dir.to_path_buf(), zip_prefix.to_string())];
+
+    while let Some((curr_fs_path, curr_zip_path)) = stack.pop() {
+        let read_dir = std::fs::read_dir(&curr_fs_path)
+            .with_context(|| format!("Failed to read: {}", curr_fs_path.display()))?;
+
+        for entry in read_dir {
+            let entry = entry?;
+            let path = entry.path();
+            let name = entry.file_name().to_string_lossy().to_string();
+            let child_zip_path = format!("{}/{}", curr_zip_path, name);
+
+            let meta = entry.metadata()?;
+
+            if meta.is_dir() {
+                stack.push((path, child_zip_path));
+            } else if meta.is_file() {
+                all_files.push((path.clone(), child_zip_path));
+                tx.send(ProgressMessage::FileFound(path.display().to_string())).ok();
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn add_file_to_zip(
     zip: &mut ZipWriter<File>,
     src_path: &Path,
     zip_path: &str,
     options: SimpleFileOptions,
 ) -> Result<()> {
     let mut file = File::open(src_path)
-        .with_context(|| format!("Failed to open file: {}", src_path.display()))?;
+        .with_context(|| format!("Failed to open: {}", src_path.display()))?;
 
     let mut buf = Vec::new();
     file.read_to_end(&mut buf)
-        .with_context(|| format!("Failed to read file: {}", src_path.display()))?;
+        .with_context(|| format!("Failed to read: {}", src_path.display()))?;
 
     zip.start_file(zip_path, options)
-        .with_context(|| format!("Failed to start ZIP file entry: {zip_path}"))?;
+        .with_context(|| format!("Failed to start ZIP entry: {zip_path}"))?;
 
     zip.write_all(&buf)
-        .with_context(|| format!("Failed writing file into ZIP: {zip_path}"))?;
-
-    Ok(())
-}
-
-async fn add_directory_iterative(
-    zip: &mut ZipWriter<File>,
-    base_dir: &Path,
-    zip_prefix: &str,
-    options: SimpleFileOptions,
-) -> Result<()> {
-    // Stack of (filesystem path, path inside zip)
-    let mut stack = vec![(base_dir.to_path_buf(), zip_prefix.to_string())];
-
-    while let Some((curr_fs_path, curr_zip_path)) = stack.pop() {
-        let mut read_dir = fs::read_dir(&curr_fs_path)
-            .await
-            .with_context(|| format!("Failed to read directory: {}", curr_fs_path.display()))?;
-
-        zip.add_directory(&curr_zip_path, options)
-            .with_context(|| format!("Failed to add directory to ZIP: {curr_zip_path}"))?;
-
-        while let Some(entry) = read_dir
-            .next_entry()
-            .await
-            .context("Failed to iterate directory")?
-        {
-            let path = entry.path();
-            let name = entry.file_name().to_string_lossy().to_string();
-            let child_zip_path = format!("{}/{}", curr_zip_path, name);
-
-            let meta = entry
-                .metadata()
-                .await
-                .with_context(|| format!("Failed to read metadata: {}", path.display()))?;
-
-            if meta.is_dir() {
-                stack.push((path, child_zip_path));
-            } else if meta.is_file() {
-                add_single_file(zip, &path, &child_zip_path, options).await?;
-            }
-        }
-    }
+        .with_context(|| format!("Failed writing to ZIP: {zip_path}"))?;
 
     Ok(())
 }
