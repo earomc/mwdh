@@ -209,7 +209,7 @@ async fn generate_zip_with_progress(paths: Vec<PathBuf>, output_path: PathBuf) -
         let scan_bar = multi.add(ProgressBar::new_spinner());
         scan_bar.set_style(
             ProgressStyle::default_spinner()
-                .template("{spinner:.green} {msg}")
+                .template("{spinner} {msg}")
                 .unwrap()
         );
         
@@ -229,7 +229,7 @@ async fn generate_zip_with_progress(paths: Vec<PathBuf>, output_path: PathBuf) -
                     let pb = multi.add(ProgressBar::new(total));
                     pb.set_style(
                         ProgressStyle::default_bar()
-                            .template("{spinner} [{elapsed_precise}] {wide_bar} {percent}% {pos}/{len} (Elapsed: {elapsed_precise}) (ETA: {eta}) {msg}")
+                            .template("{spinner} [{elapsed_precise}] {wide_bar} {percent}% {pos}/{len} (ETA: {eta}) {msg}")
                             .unwrap()
                     );
                     zip_bar = Some(pb);
