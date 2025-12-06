@@ -9,3 +9,6 @@ tokio = { version = "1", features = ["full"] }
 http-body-util = "0.1"
 hyper-util = { version = "0.1", features = ["full"] }
 zip = "6.0.0"
+clap = { version = "4", features = ["derive"] }
+colored = "3.0.0"
+anyhow = "1.0.100"
