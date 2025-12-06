@@ -2,7 +2,7 @@ use anyhow::{Context, Result};
 use futures_util::TryStreamExt;
 use http_body_util::combinators::BoxBody;
 use std::fs::File;
-use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use std::net::{SocketAddr};
 use std::process;
 use std::str::FromStr;
 use std::sync::Arc;
