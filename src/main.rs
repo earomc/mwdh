@@ -25,7 +25,6 @@ use clap::Parser;
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use std::sync::mpsc;
 use crossbeam::channel;
-use std::sync::Mutex;
 
 #[derive(Parser, Debug)]
 #[command(author, version, about)]
@@ -72,7 +71,7 @@ enum ProgressMessage {
     FileCompressed(usize, String), // worker_id, filename
     StartWriting(u64), // total files to write
     WritingFile(String), // filename being written to final ZIP
-    Complete,
+    Complete(u64), // final zip file size in bytes
 }
 
 #[derive(Clone)]
@@ -329,9 +328,9 @@ async fn generate_zip_with_progress(
                         pb.set_message(short_name.to_string());
                     }
                 }
-                ProgressMessage::Complete => {
+                ProgressMessage::Complete(file_size) => {
                     if let Some(ref pb) = write_bar {
-                        pb.finish_with_message("ZIP file created successfully!");
+                        pb.finish_with_message(format!("ZIP file created successfully! ({})", format_bytes(file_size)));
                     }
                     break;
                 }
@@ -474,7 +473,13 @@ fn generate_zip_blocking(
     }
 
     zip.finish().context("Failed to finish ZIP")?;
-    tx.send(ProgressMessage::Complete).ok();
+    
+    // Get final file size
+    let final_size = std::fs::metadata(&output_path)
+        .context("Failed to get ZIP file size")?
+        .len();
+    
+    tx.send(ProgressMessage::Complete(final_size)).ok();
     
     Ok(())
 }
@@ -506,6 +511,22 @@ fn compress_file_to_temp(
         zip_path: zip_path.to_string(),
         temp_file: temp_file_path,
     })
+}
+
+fn format_bytes(bytes: u64) -> String {
+    const KIB: u64 = 1024;
+    const MIB: u64 = KIB * 1024;
+    const GIB: u64 = MIB * 1024;
+    
+    if bytes >= GIB {
+        format!("{:.2} GiB", bytes as f64 / GIB as f64)
+    } else if bytes >= MIB {
+        format!("{:.2} MiB", bytes as f64 / MIB as f64)
+    } else if bytes >= KIB {
+        format!("{:.2} KiB", bytes as f64 / KIB as f64)
+    } else {
+        format!("{} B", bytes)
+    }
 }
 
 fn collect_files_recursive(
