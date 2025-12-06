@@ -12,3 +12,5 @@ zip = "6.0.0"
 clap = { version = "4", features = ["derive"] }
 colored = "3.0.0"
 anyhow = "1.0.100"
+tokio-util = { version = "0.7.17", features = ["io"] }
+futures-util = "0.3.31"

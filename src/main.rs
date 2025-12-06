@@ -1,22 +1,24 @@
-use std::convert::Infallible;
+use anyhow::{Context, Result};
+use futures_util::TryStreamExt;
+use http_body_util::combinators::BoxBody;
+use std::fs::File;
 use std::net::SocketAddr;
 use std::process;
+use std::sync::Arc;
+use tokio_util::io::ReaderStream;
 
-use anyhow::{Context, Result};
-
-use http_body_util::Full;
-use hyper::body::Bytes;
+use http_body_util::{BodyExt, Full, StreamBody};
+use hyper::body::{Bytes, Frame};
 use hyper::header::{CONTENT_DISPOSITION, CONTENT_TYPE};
 use hyper::server::conn::http1;
 use hyper::service::service_fn;
 use hyper::{Request, Response, StatusCode};
 use hyper_util::rt::TokioIo;
-use std::io::Write;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
-use tokio::fs::File;
 use tokio::fs::{self};
-use tokio::io::AsyncReadExt;
 use tokio::net::TcpListener;
+use zip::ZipWriter;
 use zip::write::SimpleFileOptions;
 
 use clap::Parser;
@@ -24,7 +26,7 @@ use clap::Parser;
 #[derive(Parser, Debug)]
 #[command(author, version, about)]
 pub struct Args {
-    /// Path to the minecraft server directory that contains /world, /world_nether and /world_the_end
+    /// Path to the (minecraft server) directory that contains /world, /world_nether and /world_the_end
     #[arg(short = 'p', long = "path")]
     pub path: String,
 
@@ -38,104 +40,18 @@ pub struct Args {
     #[arg(short = 'e', long = "include-end", default_value_t = false)]
     pub include_end: bool,
 
-    /// Specify the output file name - Note: (mwdh will append '.zip' to it)
+    /// Specify the download file name - Note: (mwdh will append '.zip' to it)
     #[arg(short = 'o', long = "output-file", default_value = "world")]
-    pub output_file_name: String,
+    pub download_file_name: String,
+
+    /// Host path from where to download the world files (default is /world)
+    #[arg(short = 'H', long = "host-path", default_value = "world")]
+    pub host_path: String,
 
     /// Port to serve on
     #[arg(short = 'P', long = "port", default_value_t = 3000)]
     pub port: u16,
 }
-
-async fn handle(
-    req: Request<hyper::body::Incoming>,
-    args: std::sync::Arc<Args>,
-) -> Result<Response<Full<Bytes>>, Infallible> {
-    match req.uri().path() {
-        "/ping" => Ok(Response::new(Full::new(Bytes::from("Pong!")))),
-        "/world" => {
-            let base = PathBuf::from(&args.path);
-            let mut paths_to_zip = vec![base.join("world")];
-
-            // Add optional dimension folders
-
-            if args.include_nether {
-                paths_to_zip.push(base.join("world_nether"));
-            }
-
-            if args.include_end {
-                paths_to_zip.push(base.join("world_the_end"));
-            }
-            serve_multiple_paths_zipped(paths_to_zip, &args.output_file_name).await
-        }
-
-        _ => {
-            let mut not_found = Response::new(Full::new(Bytes::from("Not Found")));
-            *not_found.status_mut() = StatusCode::NOT_FOUND;
-            Ok(not_found)
-        }
-    }
-}
-
-async fn serve_multiple_paths_zipped(
-    paths: Vec<PathBuf>,
-    file_name: &str,
-) -> Result<Response<Full<Bytes>>, Infallible> {
-    match try_serve_multiple_paths_zipped(paths, file_name).await {
-        Ok(resp) => Ok(resp),
-        Err(err) => {
-            eprintln!("ZIP generation error: {err:#}");
-            let mut resp = Response::new(Full::new(Bytes::from("Failed to generate ZIP")));
-            *resp.status_mut() = StatusCode::INTERNAL_SERVER_ERROR;
-            Ok(resp)
-        }
-    }
-}
-
-async fn try_serve_multiple_paths_zipped(
-    paths: Vec<PathBuf>,
-    file_name: &str,
-) -> Result<Response<Full<Bytes>>> {
-
-    let mut zip_buf = Vec::new();
-    let cursor = std::io::Cursor::new(&mut zip_buf);
-    let mut zip = zip::ZipWriter::new(cursor);
-
-    let options = SimpleFileOptions::default()
-        .compression_method(zip::CompressionMethod::Deflated)
-        .large_file(true);
-
-    for path in paths {
-        let name = path.file_name()
-            .ok_or_else(|| anyhow::anyhow!("Invalid path (no filename): {}", path.display()))?
-            .to_string_lossy();
-
-        let meta = fs::metadata(&path)
-            .await
-            .with_context(|| format!("Failed to stat path: {}", path.display()))?;
-
-        if meta.is_file() {
-            add_single_file(&mut zip, &path, &name, options).await?;
-        } else {
-            add_directory_iterative(&mut zip, &path, &name, options).await?;
-        }
-    }
-
-    zip.finish().context("Failed to finish ZIP")?;
-
-    let mut resp = Response::new(Full::new(Bytes::from(zip_buf)));
-    resp.headers_mut()
-        .insert(CONTENT_TYPE, "application/zip".parse().unwrap());
-    resp.headers_mut().insert(
-        CONTENT_DISPOSITION,
-        format!("attachment; filename=\"{}.zip\"", file_name)
-            .parse()
-            .unwrap(),
-    );
-
-    Ok(resp)
-}
-
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
@@ -150,32 +66,48 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         process::exit(1);
     }
     let full_path = fs::canonicalize(&path).await.unwrap_or(path.into()); // if canonicalization fails, use the relative path
-    println!("Server directory: {}", full_path.to_string_lossy());
+    println!("(Server) directory: {}", full_path.to_string_lossy());
     println!("Include Nether: {}", args.include_nether);
     println!("Include End: {}", args.include_end);
-    println!("Output file name: {}.zip", args.output_file_name);
+    println!("Output file name: {}.zip", args.download_file_name);
     run_server(args).await
 }
 
 async fn run_server(args: Args) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let zip_file_path = Path::new(&args.download_file_name).with_extension("zip");
+    let base = PathBuf::from(&args.path);
+    let mut paths_to_zip = vec![base.join("world")];
+
+    // Add optional dimension folders
+    if args.include_nether {
+        paths_to_zip.push(base.join("world_nether"));
+    }
+    if args.include_end {
+        paths_to_zip.push(base.join("world_the_end"));
+    }
+
+    // Generate and save the ZIP file when the server starts
+    generate_zip(paths_to_zip, zip_file_path.clone())
+        .await
+        .context("Failed to generate ZIP file")?;
+
     let addr = SocketAddr::from(([127, 0, 0, 1], args.port));
     let listener = TcpListener::bind(addr).await?;
+    println!("Hosting world files at {}/{}", addr, args.host_path);
 
-    // Clone the args for the handler closure
-    let shared_args = std::sync::Arc::new(args);
-    println!("Hosting world files at {}/world", addr);
+    // Clone the zip file path for the handler closure
+    let zip_file_path = std::sync::Arc::new(zip_file_path);
     loop {
         let (stream, _) = listener.accept().await?;
         let io = TokioIo::new(stream);
-        let args = shared_args.clone();
-
+        let zip_file_path = zip_file_path.clone();
         tokio::task::spawn(async move {
             if let Err(err) = http1::Builder::new()
                 .serve_connection(
                     io,
                     service_fn(move |req| {
-                        let args = args.clone();
-                        async move { handle(req, args.clone()).await }
+                        let zip_file_path = zip_file_path.clone();
+                        async move { handle(req, zip_file_path.clone()).await }
                     }),
                 )
                 .await
@@ -186,19 +118,113 @@ async fn run_server(args: Args) -> Result<(), Box<dyn std::error::Error + Send +
     }
 }
 
+async fn handle(
+    req: Request<hyper::body::Incoming>,
+    zip_file_path: Arc<PathBuf>,
+) -> Result<Response<BoxBody<Bytes, std::io::Error>>> {
+    match req.uri().path() {
+        "/ping" => Ok(Response::new(
+            Full::new(Bytes::from("Pong!"))
+                .map_err(|_| std::io::Error::new(std::io::ErrorKind::Other, "infallible"))
+                .boxed()
+        )),
+        "/world" => serve_multiple_paths_zipped(zip_file_path.clone()).await,
+
+        _ => {
+            let mut not_found = Response::new(
+                Full::new(Bytes::from("Not Found"))
+                    .map_err(|_| std::io::Error::new(std::io::ErrorKind::Other, "infallible"))
+                    .boxed()
+            );
+            *not_found.status_mut() = StatusCode::NOT_FOUND;
+            Ok(not_found)
+        }
+    }
+}
+
+async fn serve_multiple_paths_zipped(
+    zip_file_path: Arc<PathBuf>,
+) -> Result<Response<BoxBody<Bytes, std::io::Error>>> {
+    let file = tokio::fs::File::open(zip_file_path.as_ref()).await;
+    match file {
+        Ok(file) => {
+            let file_size = file.metadata().await?.len();
+
+            // Wrap to a tokio_util::io::ReaderStream
+            let reader_stream = ReaderStream::new(file);
+
+            // Convert to http_body_util::BoxBody
+            let stream_body = StreamBody::new(reader_stream.map_ok(Frame::data));
+            let boxed_body = stream_body.boxed();
+
+            let response = Response::builder()
+                .header(CONTENT_TYPE, "application/zip")
+                .header(
+                    CONTENT_DISPOSITION,
+                    format!(
+                        "attachment; filename=\"{}\"",
+                        zip_file_path.file_name().unwrap().to_string_lossy()
+                    ),
+                )
+                .header("Content-Length", file_size.to_string())
+                .status(StatusCode::OK)
+                .body(boxed_body)
+                .unwrap();
+
+            Ok(response)
+        }
+        Err(err) => {
+            eprintln!("Failed to read the ZIP file: {}", err);
+            let mut resp = Response::new(
+                Full::new(Bytes::from("Failed to serve ZIP"))
+                    .map_err(|_| std::io::Error::new(std::io::ErrorKind::Other, "infallible"))
+                    .boxed()
+            );
+            *resp.status_mut() = StatusCode::INTERNAL_SERVER_ERROR;
+            Ok(resp)
+        }
+    }
+}
+
+pub async fn generate_zip(paths: Vec<PathBuf>, output_path: PathBuf) -> Result<()> {
+    let file = std::fs::File::create(&output_path)?;
+    let mut zip = ZipWriter::new(file);
+
+    let options = SimpleFileOptions::default()
+        .compression_method(zip::CompressionMethod::Deflated)
+        .large_file(true);
+
+    for path in paths {
+        let name = path
+            .file_name()
+            .ok_or_else(|| anyhow::anyhow!("Invalid path (no filename): {}", path.display()))?
+            .to_string_lossy();
+
+        let meta = fs::metadata(&path)
+            .await
+            .with_context(|| format!("Failed to stat path: {}", path.display()))?;
+
+        if meta.is_file() {
+            add_single_file(&mut zip, &path, &name, options).await?;
+        } else {
+            add_directory_iterative(&mut zip, &path, &name, options).await?;
+        }
+    }
+    zip.finish().context("Failed to finish ZIP")?;
+    Ok(())
+}
+
 async fn add_single_file(
-    zip: &mut zip::ZipWriter<std::io::Cursor<&mut Vec<u8>>>,
+    zip: &mut ZipWriter<File>,
     src_path: &Path,
     zip_path: &str,
     options: SimpleFileOptions,
 ) -> Result<()> {
     let mut file = File::open(src_path)
-        .await
         .with_context(|| format!("Failed to open file: {}", src_path.display()))?;
 
     let mut buf = Vec::new();
     file.read_to_end(&mut buf)
-        .await
         .with_context(|| format!("Failed to read file: {}", src_path.display()))?;
 
     zip.start_file(zip_path, options)
@@ -211,7 +237,7 @@ async fn add_single_file(
 }
 
 async fn add_directory_iterative(
-    zip: &mut zip::ZipWriter<std::io::Cursor<&mut Vec<u8>>>,
+    zip: &mut ZipWriter<File>,
     base_dir: &Path,
     zip_prefix: &str,
     options: SimpleFileOptions,
