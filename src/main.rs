@@ -25,6 +25,7 @@ use clap::Parser;
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use std::sync::mpsc;
 use crossbeam::channel;
+use std::sync::Mutex;
 
 #[derive(Parser, Debug)]
 #[command(author, version, about)]
@@ -66,10 +67,11 @@ pub struct Args {
 enum ProgressMessage {
     StartScanning,
     FileFound(String),
-    StartZipping(u64), // total files
+    StartCompression(u64), // total files to compress
     StartCompressing(usize, String), // worker_id, filename
     FileCompressed(usize, String), // worker_id, filename
-    StartWriting(String), // filename being written to final ZIP
+    StartWriting(u64), // total files to write
+    WritingFile(String), // filename being written to final ZIP
     Complete,
 }
 
@@ -77,8 +79,6 @@ enum ProgressMessage {
 struct CompressedFileRef {
     zip_path: String,
     temp_file: PathBuf,
-    original_size: u64,
-    compressed_size: u64,
 }
 
 #[tokio::main]
@@ -240,9 +240,10 @@ async fn generate_zip_with_progress(
         );
         
         let mut worker_bars: Vec<ProgressBar> = Vec::new();
-        let mut overall_bar: Option<ProgressBar> = None;
+        let mut compression_bar: Option<ProgressBar> = None;
         let mut write_bar: Option<ProgressBar> = None;
-        let mut processed_count = 0u64;
+        let mut compressed_count = 0u64;
+        let mut written_count = 0u64;
         
         while let Ok(msg) = rx.recv() {
             match msg {
@@ -253,30 +254,17 @@ async fn generate_zip_with_progress(
                     scan_bar.set_message(format!("Found: {}", 
                         Path::new(&name).file_name().unwrap_or_default().to_string_lossy()));
                 }
-                ProgressMessage::StartZipping(total) => {
+                ProgressMessage::StartCompression(total) => {
                     scan_bar.finish_with_message(format!("Found {} files", total));
                     
-                    // Create overall progress bar
+                    // Create compression progress bar
                     let pb = multi.add(ProgressBar::new(total));
                     pb.set_style(
                         ProgressStyle::default_bar()
-                            .template("{spinner} [{elapsed_precise}] {wide_bar} {percent}% {pos}/{len} (ETA: {eta})")
+                            .template("{spinner} Compressing: [{elapsed_precise}] {wide_bar} {percent}% {pos}/{len} (ETA: {eta})")
                             .unwrap()
                     );
-                    overall_bar = Some(pb);
-                    
-                    // Pre-create all worker bars based on thread count
-                    // We can infer thread count from the fact that we'll see worker IDs 0..N
-                    // For now, create them on-demand but with bounds checking
-                    
-                    // Create write progress bar
-                    let wb = multi.add(ProgressBar::new_spinner());
-                    wb.set_style(
-                        ProgressStyle::default_spinner()
-                            .template("{spinner} Writing: {msg}")
-                            .unwrap()
-                    );
-                    write_bar = Some(wb);
+                    compression_bar = Some(pb);
                 }
                 ProgressMessage::StartCompressing(worker_id, filename) => {
                     // Ensure we have enough worker bars with bounds checking
@@ -297,22 +285,43 @@ async fn generate_zip_with_progress(
                         .to_string_lossy();
                     
                     if let Some(bar) = worker_bars.get(worker_id) {
-                        bar.set_message(format!("Compressing: {}", short_name));
+                        bar.set_message(format!("{}", short_name));
                     }
                 }
                 ProgressMessage::FileCompressed(worker_id, _filename) => {
+                    compressed_count += 1;
+                    
+                    if let Some(ref pb) = compression_bar {
+                        pb.set_position(compressed_count);
+                    }
+                    
                     if let Some(bar) = worker_bars.get(worker_id) {
                         bar.set_message("Idle".to_string());
                     }
                 }
-                ProgressMessage::StartWriting(filename) => {
-                    processed_count += 1;
-                    
-                    if let Some(ref pb) = overall_bar {
-                        pb.set_position(processed_count);
+                ProgressMessage::StartWriting(total) => {
+                    // Finish compression phase
+                    if let Some(ref pb) = compression_bar {
+                        pb.finish_with_message("All files compressed!");
+                    }
+                    for bar in &worker_bars {
+                        bar.finish_and_clear();
                     }
                     
+                    // Create write progress bar
+                    let wb = multi.add(ProgressBar::new(total));
+                    wb.set_style(
+                        ProgressStyle::default_bar()
+                            .template("{spinner} Writing ZIP: [{elapsed_precise}] {wide_bar} {percent}% {pos}/{len} - {msg}")
+                            .unwrap()
+                    );
+                    write_bar = Some(wb);
+                }
+                ProgressMessage::WritingFile(filename) => {
+                    written_count += 1;
+                    
                     if let Some(ref pb) = write_bar {
+                        pb.set_position(written_count);
                         let short_name = Path::new(&filename)
                             .file_name()
                             .unwrap_or_default()
@@ -321,14 +330,8 @@ async fn generate_zip_with_progress(
                     }
                 }
                 ProgressMessage::Complete => {
-                    if let Some(pb) = overall_bar {
+                    if let Some(ref pb) = write_bar {
                         pb.finish_with_message("ZIP file created successfully!");
-                    }
-                    if let Some(pb) = write_bar {
-                        pb.finish_and_clear();
-                    }
-                    for bar in worker_bars {
-                        bar.finish_and_clear();
                     }
                     break;
                 }
@@ -383,7 +386,7 @@ fn generate_zip_blocking(
     }
 
     let total_files = all_files.len() as u64;
-    tx.send(ProgressMessage::StartZipping(total_files)).ok();
+    tx.send(ProgressMessage::StartCompression(total_files)).ok();
 
     // Second pass: compress files in parallel using a worker pool
     let (work_tx, work_rx) = channel::unbounded::<(usize, PathBuf, String)>();
@@ -424,7 +427,7 @@ fn generate_zip_blocking(
     drop(result_tx); // Drop our copy so receiver knows when workers are done
     
     // Collect results in order
-    let mut compressed_files: Vec<Option<CompressedFileRef>> = vec![None; all_files.len()];
+    let mut compressed_files = vec![None; all_files.len()];
     for result in result_rx {
         let compressed = result?;
         // Extract index from temp filename
@@ -443,6 +446,8 @@ fn generate_zip_blocking(
     }
 
     // Third pass: write all compressed data to ZIP sequentially
+    tx.send(ProgressMessage::StartWriting(all_files.len() as u64)).ok();
+    
     let file = std::fs::File::create(&output_path)?;
     let mut zip = ZipWriter::new(file);
     let options = SimpleFileOptions::default()
@@ -452,7 +457,7 @@ fn generate_zip_blocking(
     for compressed_opt in compressed_files {
         let compressed = compressed_opt.ok_or_else(|| anyhow::anyhow!("Missing compressed file"))?;
         
-        tx.send(ProgressMessage::StartWriting(compressed.zip_path.clone())).ok();
+        tx.send(ProgressMessage::WritingFile(compressed.zip_path.clone())).ok();
         
         zip.start_file(&compressed.zip_path, options)
             .with_context(|| format!("Failed to start ZIP entry: {}", compressed.zip_path))?;
@@ -490,22 +495,16 @@ fn compress_file_to_temp(
     let mut input_file = File::open(src_path)
         .with_context(|| format!("Failed to open: {}", src_path.display()))?;
     
-    let original_size = input_file.metadata()?.len();
-    
     // Compress directly to temp file
     let mut encoder = DeflateEncoder::new(&mut temp_file, Compression::default());
     std::io::copy(&mut input_file, &mut encoder)
         .with_context(|| format!("Failed to compress: {}", src_path.display()))?;
     encoder.finish()
         .with_context(|| format!("Failed to finish compression: {}", src_path.display()))?;
-    
-    let compressed_size = temp_file.metadata()?.len();
 
     Ok(CompressedFileRef {
         zip_path: zip_path.to_string(),
         temp_file: temp_file_path,
-        original_size,
-        compressed_size,
     })
 }
 
