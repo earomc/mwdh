@@ -61,6 +61,7 @@ pub struct Args {
     #[arg(short = 't', long = "threads", default_value_t = 0)]
     pub threads: usize,
 
+    /// The level of compression to apply. COMPRESSION_LEVEL should be an integer from 0-9 where 0 means "no compression" and 9 means "take as long as you'd like"
     #[arg(short = 'l', long, value_parser=clap::value_parser!(u8).range(0..=9), default_value_t = 6)]
     compression_level: u8,
 }
