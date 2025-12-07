@@ -1,6 +1,6 @@
 [package]
 name = "mwdh"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 repository = "https://github.com/earomc/mwdh"
 
@@ -16,7 +16,7 @@ anyhow = "1.0.100"
 tokio-util = { version = "0.7.17", features = ["io"] }
 futures-util = "0.3.31"
 indicatif = "0.18"
-flate2 = "1.1.7"
+flate2 = "1.1.5"
 num_cpus = "1.17.0"
 scopeguard = "1.2.0"
 crossbeam = "0.8.4"
