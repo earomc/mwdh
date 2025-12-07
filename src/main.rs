@@ -192,13 +192,13 @@ async fn serve_multiple_paths_zipped(
                     CONTENT_DISPOSITION,
                     format!(
                         "attachment; filename=\"{}\"",
-                        zip_file_path.file_name().unwrap().to_string_lossy()
+                        zip_file_path.file_name().expect("Should be a file path").to_string_lossy() // expect/unwrap here is okay, because the path should always end with .zip, pointing to an actual file
                     ),
                 )
                 .header("Content-Length", file_size.to_string())
                 .status(StatusCode::OK)
                 .body(boxed_body)
-                .unwrap();
+                .unwrap(); // unwrap here, because we know that we specified a correct header structure in the code
 
             Ok(response)
         }
@@ -351,12 +351,12 @@ fn generate_zip_blocking(
     tx: mpsc::Sender<ProgressMessage>,
     thread_count: usize,
 ) -> Result<()> {
-    // Create temp directory for compressed files
+    // Create temporary directory for compressed files
     let temp_dir = std::env::temp_dir().join(format!("mwdh_{}", std::process::id()));
     std::fs::create_dir_all(&temp_dir)
         .context("Failed to create temp directory")?;
     
-    // Ensure cleanup on exit
+    // Ensure cleanup on exit. Even if something panics, the cleanup will be done.
     let temp_dir_clone = temp_dir.clone();
     let _cleanup = scopeguard::guard((), move |_| {
         let _ = std::fs::remove_dir_all(&temp_dir_clone);
@@ -413,8 +413,7 @@ fn generate_zip_blocking(
                             break;
                         }
                     }
-                })
-                .unwrap()
+                }).expect("Failed to spawn thread")
         })
         .collect();
     
@@ -468,13 +467,12 @@ fn generate_zip_blocking(
         std::io::copy(&mut temp_file, &mut zip)
             .with_context(|| format!("Failed writing to ZIP: {}", compressed.zip_path))?;
         
-        // Clean up temp file immediately after writing
+        // Clean up temp file immediately after writing to zip archive
         std::fs::remove_file(&compressed.temp_file).ok();
     }
 
     zip.finish().context("Failed to finish ZIP")?;
     
-    // Get final file size
     let final_size = std::fs::metadata(&output_path)
         .context("Failed to get ZIP file size")?
         .len();
