@@ -13,11 +13,22 @@ With just a singe command it compresses and packages up a .zip archive of the wo
 
 # Quick Start
 
-1. Acquire a MWDH binary (either download a pre-built or build it yourself)
-2. Run the ol' command ``mwdh -p <path-to-your-mc-server-folder> -ne`` (-ne means 'include Nether and End')
-3. Once it says "Hosting world files at", open yo webbrowser at that link and it should download the file. ez peezy.
+1. Install: Check out the [releases tab](https://https://github.com/earomc/mwdh/releases/) to download a pre-built binary for your specific system or use the install script.
+3. Run the ol' command ``mwdh -p <path-to-your-mc-server-folder> -ne`` (-ne means 'include Nether and End')
+4. Once it says "Hosting world files at", open yo webbrowser at that link and it should download the file. ez peezy.
 
 # Firewall Settings
 
 You may need to fiddle around with your proxy/firewall settings so that others can actually reach the port from the external network n stuff.
-If your server is on Ubuntu Linux or similar you might try ``sudo ufw allow [port-number]`` MWDH's default default port-number is 3000, but you can configure it with the --port/-P argument
+If your server is on Ubuntu Linux or similar you might wanna try ``sudo ufw allow [port-number]`` MWDH's default default port-number is 3000, but you can configure it with the --port/-P argument
+
+# Building
+If you don't trust me or 'dist' that the binaries are actually cool n all, you can of course build them yourself:
+
+1. Make sure you have [Rust and Cargo](https://rustup.rs/) installed
+2. Clone the repo and replace <release_tag> with your desired release: ``git clone --depth 1 --branch <release_tag> https://github.com/earomc/mhdw.git``
+3. Invoke Cargo: ``cargo b -r``
+
+## Note about platform compatibility
+This repo only provides pre-built binaries for Linux because pretty much all servers and therefore pretty much all Minecraft Servers are on Linux. 
+But I see no specific reason why this shouldn't work on Windows or Mac. 
