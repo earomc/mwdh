@@ -1,6 +1,6 @@
 # mwdh
 
-MWDH stands for "Minecraft World Download Hoster" and is an easy command line utility (CLI) and HTTP file server to provide a world download for your Minecraft server's world.
+MWDH stands for "Minecraft World Download Hoster" and is an easy command line utility (CLI), Minecraft world file compressor and HTTP file server to provide a world download for your Minecraft server's world.
 
 # Intro / Motivation
 
