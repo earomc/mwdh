@@ -33,33 +33,51 @@ And leveraging Rust and concurrent programming, you won't have to wait ages unti
 # Quick Start
 
 1. Install: Check out the [releases tab](https://github.com/earomc/mwdh/releases/) to download a pre-built binary for your specific system or use the install script.
-2. Run the ol' command: ``mwdh -p <path-to-your-mc-server-directory> -ne`` (-ne means 'include Nether and End')
-3. Once it says "Hosting world files at", open your webbrowser at ``<your-server-ip>:3000/world`` and it should download the file. ez peezy.    
+2. Run the ol' command:
+   
+   ```sh
+   mwdh -p <path-to-your-mc-server-directory> -ne
+   ```
+   > -ne means 'include Nether and End'
+4. Once it says "Hosting world files at", open your webbrowser at ``<your-server-ip>:3000/world`` and it should download the file. ez peezy.    
 
 # Firewall Settings
 
 You may need to fiddle around with your proxy/firewall settings so that others can actually reach the port from the external network n stuff. An internet search "open firewall port on <your-distro>" might do the trick.
 
 > MWDH's default port number is 3000, but if you need to change that you easily can by passing the ``--port`` or ``-P`` argument:
-```mwdh [...] -P <port>```
+```sh
+mwdh [...] -P <port>
+```
 
 ## Configuring UFW (uncomplicated firewall)
 If your server is running Ubuntu Linux or similar **and/or you have ufw installed** you might wanna try:
 
-```sudo ufw allow [port-number]/tcp```
+```sh
+sudo ufw allow <port-number>/tcp
+```
 
 and make sure it's enabled:
 
-```sudo ufw enable```
+```sh
+sudo ufw enable
+```
 
 # Building From Source
 
 If you don't trust me or 'dist' that the binaries are actually cool n all, you can of course build them yourself:
 
 1. Make sure you have [Rust and Cargo](https://rustup.rs/) installed
-2. Clone the repo and replace <release_tag> with your desired release: ``git clone --depth 1 --branch <release_tag> https://github.com/earomc/mwdh.git``
-3. Invoke Cargo: ``cargo b -r``
+2. Clone the repo and replace ``<release-tag>`` with your desired release:
 
+   ```sh
+   git clone --depth 1 --branch <release-tag> https://github.com/earomc/mwdh.git
+   ```
+4. Invoke Cargo:
+
+   ```sh
+   cargo b -r
+   ```
 ## Note about platform compatibility
 This repo only provides pre-built binaries for Linux because pretty much all servers and therefore pretty much all Minecraft Servers are on Linux. 
 But even though it hasn't been tested, I see no specific reason why MWDH shouldn't work on Windows or Mac. 
