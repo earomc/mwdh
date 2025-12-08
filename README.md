@@ -37,7 +37,7 @@ And leveraging Rust and concurrent programming, you won't have to wait ages unti
 
 You may need to fiddle around with your proxy/firewall settings so that others can actually reach the port from the external network n stuff. An internet search "open firewall port on <your-distro>" might do the trick.
 
-> MWDH's default default port number is 3000, but if you need to change that you easily can by passing the ``--port`` or ``-P`` argument:
+> MWDH's default port number is 3000, but if you need to change that you easily can by passing the ``--port`` or ``-P`` argument:
 ```mwdh [...] -P <port>```
 
 ## Configuring UFW (uncomplicated firewall)
