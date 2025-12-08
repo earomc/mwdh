@@ -31,7 +31,7 @@ And leveraging Rust and concurrent programming, you won't have to wait ages unti
 
 1. Install: Check out the [releases tab](https://github.com/earomc/mwdh/releases/) to download a pre-built binary for your specific system or use the install script.
 2. Run the ol' command: ``mwdh -p <path-to-your-mc-server-directory> -ne`` (-ne means 'include Nether and End')
-3. Once it says "Hosting world files at", open your webbrowser at ``<your-server-ip>:3000`` and it should download the file. ez peezy.    
+3. Once it says "Hosting world files at", open your webbrowser at ``<your-server-ip>:3000/world`` and it should download the file. ez peezy.    
 
 # Firewall Settings
 
