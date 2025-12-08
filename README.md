@@ -13,6 +13,8 @@ MWDH stands for "Minecraft World Download Hoster" and is an easy command line ut
    - **Self-hosted** - No cloud storage fees or upload waits
    - **Simple** - One command and you're hosting!
 
+![mwdh](https://github.com/user-attachments/assets/bc21c45d-64ca-4258-94a0-37e4403deae3)
+
 # Intro / Motivation
 
 Picture this: You're the admin of an SMP server, the season just ended and everyone is screaming for a world download. Of course, you don't want all the good work and memories go to waste, so you want to help. 
