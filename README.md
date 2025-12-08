@@ -17,7 +17,7 @@ MWDH stands for "Minecraft World Download Hoster" and is an easy command line ut
 
 Picture this: You're the admin of an SMP server, the season just ended and everyone is screaming for a world download. Of course, you don't want all the good work and memories go to waste, so you want to help. 
 
-But it seems kinda like a chore to package up gibibytes on gibibytes of world files and then somehow find a way to make them downloadable for everyone? Manually fiddling with commands or random tools and then throwing money into big companies' throats for cloud storage when you're hosting your own server? 
+But it seems kinda like a chore to package up gibibytes on gibibytes of world files and then somehow find a way to make them downloadable for everyone? Manually fiddling with commands or random tools and then throwing money into big companies' throats for cloud storage when you're already hosting your own server? 
 
 NAH that sh*t STINKS! 
 
