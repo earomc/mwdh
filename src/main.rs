@@ -22,9 +22,9 @@ use zip::ZipWriter;
 use zip::write::SimpleFileOptions;
 
 use clap::Parser;
+use crossbeam::channel;
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use std::sync::mpsc;
-use crossbeam::channel;
 
 #[derive(Parser, Debug)]
 #[command(author, version, about)]
@@ -70,12 +70,12 @@ pub struct Args {
 enum ProgressMessage {
     StartScanning,
     FileFound(String),
-    StartCompression(u64), // total files to compress
+    StartCompression(u64),           // total files to compress
     StartCompressing(usize, String), // worker_id, filename
-    FileCompressed(usize, String), // worker_id, filename
-    StartWriting(u64), // total files to write
-    WritingFile(String), // filename being written to final ZIP
-    Complete(u64), // final zip file size in bytes
+    FileCompressed(usize, String),   // worker_id, filename
+    StartWriting(u64),               // total files to write
+    WritingFile(String),             // filename being written to final ZIP
+    Complete(u64),                   // final zip file size in bytes
 }
 
 #[derive(Clone)]
@@ -109,11 +109,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     };
     println!("Using {} compression threads", thread_count);
     println!("Compression level {}", args.compression_level);
-    
+
     run_server(args, thread_count).await
 }
 
-async fn run_server(args: Args, thread_count: usize) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+async fn run_server(
+    args: Args,
+    thread_count: usize,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let zip_file_path = Path::new(&args.download_file_name).with_extension("zip");
     let base = PathBuf::from(&args.path);
     let mut paths_to_zip = vec![base.join("world")];
@@ -126,26 +129,35 @@ async fn run_server(args: Args, thread_count: usize) -> Result<(), Box<dyn std::
     }
 
     // Generate ZIP with progress updates
-    generate_zip_with_progress(paths_to_zip, zip_file_path.clone(), thread_count, args.compression_level as u32)
-        .await
-        .context("Failed to generate ZIP file")?;
+    generate_zip_with_progress(
+        paths_to_zip,
+        zip_file_path.clone(),
+        thread_count,
+        args.compression_level as u32,
+    )
+    .await
+    .context("Failed to generate ZIP file")?;
 
     let addr = SocketAddr::from_str(&format!("{}:{}", args.host_ip, args.port))?;
     let listener = TcpListener::bind(addr).await?;
     println!("\nHosting world files at {}/{}", addr, args.host_path);
 
     let zip_file_path = std::sync::Arc::new(zip_file_path);
+    let host_path = Arc::new(args.host_path);
     loop {
         let (stream, _) = listener.accept().await?;
         let io = TokioIo::new(stream);
         let zip_file_path = zip_file_path.clone();
+
+        let host_path = host_path.clone();
         tokio::task::spawn(async move {
             if let Err(err) = http1::Builder::new()
                 .serve_connection(
                     io,
                     service_fn(move |req| {
+                        let host_path = host_path.clone();
                         let zip_file_path = zip_file_path.clone();
-                        async move { handle(req, zip_file_path.clone()).await }
+                        async move { handle(req, &host_path.clone(), zip_file_path.clone()).await }
                     }),
                 )
                 .await
@@ -158,21 +170,24 @@ async fn run_server(args: Args, thread_count: usize) -> Result<(), Box<dyn std::
 
 async fn handle(
     req: Request<hyper::body::Incoming>,
+    serve_on_path: &str,
     zip_file_path: Arc<PathBuf>,
 ) -> Result<Response<BoxBody<Bytes, std::io::Error>>> {
-    match req.uri().path() {
+    let path = req.uri().path();
+    match path {
         "/ping" => Ok(Response::new(
             Full::new(Bytes::from("Pong!"))
                 .map_err(|_| std::io::Error::new(std::io::ErrorKind::Other, "infallible"))
-                .boxed()
+                .boxed(),
         )),
-        "/world" => serve_multiple_paths_zipped(zip_file_path.clone()).await,
-
         _ => {
+            if &path[1..] == serve_on_path {
+                return get_zip_file_as_response(zip_file_path.clone()).await;
+            }
             let mut not_found = Response::new(
                 Full::new(Bytes::from("Not Found"))
                     .map_err(|_| std::io::Error::new(std::io::ErrorKind::Other, "infallible"))
-                    .boxed()
+                    .boxed(),
             );
             *not_found.status_mut() = StatusCode::NOT_FOUND;
             Ok(not_found)
@@ -180,7 +195,7 @@ async fn handle(
     }
 }
 
-async fn serve_multiple_paths_zipped(
+async fn get_zip_file_as_response(
     zip_file_path: Arc<PathBuf>,
 ) -> Result<Response<BoxBody<Bytes, std::io::Error>>> {
     let file = tokio::fs::File::open(zip_file_path.as_ref()).await;
@@ -197,7 +212,10 @@ async fn serve_multiple_paths_zipped(
                     CONTENT_DISPOSITION,
                     format!(
                         "attachment; filename=\"{}\"",
-                        zip_file_path.file_name().expect("Should be a file path").to_string_lossy() // expect/unwrap here is okay, because the path should always end with .zip, pointing to an actual file
+                        zip_file_path
+                            .file_name()
+                            .expect("Should be a file path")
+                            .to_string_lossy() // expect/unwrap here is okay, because the path should always end with .zip, pointing to an actual file
                     ),
                 )
                 .header("Content-Length", file_size.to_string())
@@ -212,7 +230,7 @@ async fn serve_multiple_paths_zipped(
             let mut resp = Response::new(
                 Full::new(Bytes::from("Failed to serve ZIP"))
                     .map_err(|_| std::io::Error::new(std::io::ErrorKind::Other, "infallible"))
-                    .boxed()
+                    .boxed(),
             );
             *resp.status_mut() = StatusCode::INTERNAL_SERVER_ERROR;
             Ok(resp)
@@ -241,7 +259,7 @@ async fn generate_zip_with_progress(
         scan_bar.set_style(
             ProgressStyle::default_spinner()
                 .template("{spinner} {msg}")
-                .unwrap()
+                .unwrap(),
         );
 
         let mut worker_bars: Vec<ProgressBar> = Vec::new();
@@ -256,8 +274,13 @@ async fn generate_zip_with_progress(
                     scan_bar.set_message("Scanning directories...");
                 }
                 ProgressMessage::FileFound(name) => {
-                    scan_bar.set_message(format!("Found: {}",
-                        Path::new(&name).file_name().unwrap_or_default().to_string_lossy()));
+                    scan_bar.set_message(format!(
+                        "Found: {}",
+                        Path::new(&name)
+                            .file_name()
+                            .unwrap_or_default()
+                            .to_string_lossy()
+                    ));
                 }
                 ProgressMessage::StartCompression(total) => {
                     scan_bar.finish_with_message(format!("Found {} files", total));
@@ -279,7 +302,7 @@ async fn generate_zip_with_progress(
                         pb.set_style(
                             ProgressStyle::default_spinner()
                                 .template(&format!("{{spinner}} Worker {}: {{msg}}", bar_id))
-                                .unwrap()
+                                .unwrap(),
                         );
                         worker_bars.push(pb);
                     }
@@ -336,7 +359,10 @@ async fn generate_zip_with_progress(
                 }
                 ProgressMessage::Complete(file_size) => {
                     if let Some(ref pb) = write_bar {
-                        pb.finish_with_message(format!("ZIP file created successfully! ({})", format_bytes(file_size)));
+                        pb.finish_with_message(format!(
+                            "ZIP file created successfully! ({})",
+                            format_bytes(file_size)
+                        ));
                     }
                     break;
                 }
@@ -360,8 +386,7 @@ fn generate_zip_blocking(
 ) -> Result<()> {
     // Create temporary directory for compressed files
     let temp_dir = std::env::temp_dir().join(format!("mwdh_{}", std::process::id()));
-    std::fs::create_dir_all(&temp_dir)
-        .context("Failed to create temp directory")?;
+    std::fs::create_dir_all(&temp_dir).context("Failed to create temp directory")?;
 
     // Ensure cleanup on exit. Even if something panics, the cleanup will be done.
     let temp_dir_clone = temp_dir.clone();
@@ -385,7 +410,8 @@ fn generate_zip_blocking(
 
         if meta.is_file() {
             all_files.push((path.clone(), name));
-            tx.send(ProgressMessage::FileFound(path.display().to_string())).ok();
+            tx.send(ProgressMessage::FileFound(path.display().to_string()))
+                .ok();
         } else {
             collect_files_recursive(path, &name, &mut all_files, &tx)?;
         }
@@ -410,17 +436,29 @@ fn generate_zip_blocking(
                 .name(format!("worker-{}", worker_id))
                 .spawn(move || {
                     while let Ok((idx, src_path, zip_path)) = work_rx.recv() {
-                        tx.send(ProgressMessage::StartCompressing(worker_id, zip_path.clone())).ok();
+                        tx.send(ProgressMessage::StartCompressing(
+                            worker_id,
+                            zip_path.clone(),
+                        ))
+                        .ok();
 
-                        let result = compress_file_to_temp(&src_path, &zip_path, &temp_dir, compression_level, idx);
+                        let result = compress_file_to_temp(
+                            &src_path,
+                            &zip_path,
+                            &temp_dir,
+                            compression_level,
+                            idx,
+                        );
 
-                        tx.send(ProgressMessage::FileCompressed(worker_id, zip_path.clone())).ok();
+                        tx.send(ProgressMessage::FileCompressed(worker_id, zip_path.clone()))
+                            .ok();
 
                         if result_tx.send(result).is_err() {
                             break;
                         }
                     }
-                }).expect("Failed to spawn thread")
+                })
+                .expect("Failed to spawn thread")
         })
         .collect();
 
@@ -436,7 +474,8 @@ fn generate_zip_blocking(
     for result in result_rx {
         let compressed = result?;
         // Extract index from temp filename
-        let idx_str = compressed.temp_file
+        let idx_str = compressed
+            .temp_file
             .file_stem()
             .and_then(|s| s.to_str())
             .and_then(|s| s.split('_').last())
@@ -451,7 +490,8 @@ fn generate_zip_blocking(
     }
 
     // Third pass: write all compressed data to ZIP sequentially
-    tx.send(ProgressMessage::StartWriting(all_files.len() as u64)).ok();
+    tx.send(ProgressMessage::StartWriting(all_files.len() as u64))
+        .ok();
 
     let file = std::fs::File::create(&output_path)?;
     let mut zip = ZipWriter::new(file);
@@ -460,16 +500,22 @@ fn generate_zip_blocking(
         .large_file(true);
 
     for compressed_opt in compressed_files {
-        let compressed = compressed_opt.ok_or_else(|| anyhow::anyhow!("Missing compressed file"))?;
+        let compressed =
+            compressed_opt.ok_or_else(|| anyhow::anyhow!("Missing compressed file"))?;
 
-        tx.send(ProgressMessage::WritingFile(compressed.zip_path.clone())).ok();
+        tx.send(ProgressMessage::WritingFile(compressed.zip_path.clone()))
+            .ok();
 
         zip.start_file(&compressed.zip_path, options)
             .with_context(|| format!("Failed to start ZIP entry: {}", compressed.zip_path))?;
 
         // Stream from temp file to ZIP
-        let mut temp_file = File::open(&compressed.temp_file)
-            .with_context(|| format!("Failed to open temp file: {}", compressed.temp_file.display()))?;
+        let mut temp_file = File::open(&compressed.temp_file).with_context(|| {
+            format!(
+                "Failed to open temp file: {}",
+                compressed.temp_file.display()
+            )
+        })?;
 
         std::io::copy(&mut temp_file, &mut zip)
             .with_context(|| format!("Failed writing to ZIP: {}", compressed.zip_path))?;
@@ -496,21 +542,22 @@ fn compress_file_to_temp(
     compression_level: u32,
     idx: usize,
 ) -> Result<CompressedFileRef> {
-    use flate2::write::DeflateEncoder;
     use flate2::Compression;
+    use flate2::write::DeflateEncoder;
 
     let temp_file_path = temp_dir.join(format!("compressed_{}.tmp", idx));
     let mut temp_file = File::create(&temp_file_path)
         .with_context(|| format!("Failed to create temp file: {}", temp_file_path.display()))?;
 
-    let mut input_file = File::open(src_path)
-        .with_context(|| format!("Failed to open: {}", src_path.display()))?;
+    let mut input_file =
+        File::open(src_path).with_context(|| format!("Failed to open: {}", src_path.display()))?;
 
     // Compress directly to temp file
     let mut encoder = DeflateEncoder::new(&mut temp_file, Compression::new(compression_level));
     std::io::copy(&mut input_file, &mut encoder)
         .with_context(|| format!("Failed to compress: {}", src_path.display()))?;
-    encoder.finish()
+    encoder
+        .finish()
         .with_context(|| format!("Failed to finish compression: {}", src_path.display()))?;
 
     Ok(CompressedFileRef {
@@ -559,7 +606,8 @@ fn collect_files_recursive(
                 stack.push((path, child_zip_path));
             } else if meta.is_file() {
                 all_files.push((path.clone(), child_zip_path));
-                tx.send(ProgressMessage::FileFound(path.display().to_string())).ok();
+                tx.send(ProgressMessage::FileFound(path.display().to_string()))
+                    .ok();
             }
         }
     }
