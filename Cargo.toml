@@ -1,8 +1,9 @@
 [package]
 name = "mwdh"
-version = "0.1.4"
+version = "0.2.0-dev"
 edition = "2024"
 repository = "https://github.com/earomc/mwdh"
+description = "MWDH stands for \"Minecraft World Download Hoster\" and is an easy command line utility (CLI), Minecraft world file compressor and HTTP file server to provide a world download for your Minecraft server's world."
 
 [dependencies]
 hyper = { version = "1", features = ["full"] }
@@ -10,7 +11,7 @@ tokio = { version = "1", features = ["full"] }
 http-body-util = "0.1"
 hyper-util = { version = "0.1", features = ["full"] }
 zip = "6.0.0"
-clap = { version = "4", features = ["derive"] }
+clap = { version = "4", features = ["derive", "cargo"] }
 colored = "3.0.0"
 anyhow = "1.0.100"
 tokio-util = { version = "0.7.17", features = ["io"] }
@@ -20,6 +21,7 @@ flate2 = "1.1.5"
 num_cpus = "1.17.0"
 scopeguard = "1.2.0"
 crossbeam = "0.8.4"
+zstd = "0.13.3"
 
 # The profile that 'dist' will build with
 [profile.dist]

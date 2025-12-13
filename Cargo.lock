@@ -781,7 +781,7 @@ dependencies = [
 
 [[package]]
 name = "mwdh"
-version = "0.1.4"
+version = "0.2.0-dev"
 dependencies = [
  "anyhow",
  "clap",
@@ -798,6 +798,7 @@ dependencies = [
  "tokio",
  "tokio-util",
  "zip",
+ "zstd",
 ]
 
 [[package]]
