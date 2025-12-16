@@ -1,5 +1,5 @@
-use crate::{Args, CompressionFormat, compression, paths_to_be_archived};
-use anyhow::{Context, Result};
+use crate::{CompressionFormat, ServerOptions};
+use anyhow::Result;
 use futures_util::TryStreamExt;
 use http_body_util::combinators::BoxBody;
 use std::net::SocketAddr;
@@ -14,42 +14,19 @@ use hyper::server::conn::http1;
 use hyper::service::service_fn;
 use hyper::{Request, Response, StatusCode};
 use hyper_util::rt::TokioIo;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use tokio::net::TcpListener;
 
-pub async fn run_server(args: Args) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let archive_output_path = Path::new(&args.download_file_name);
-    let paths_to_be_archived = paths_to_be_archived(&args);
-    match args.compression_format {
-        CompressionFormat::ZipDeflate => {
-            let archive_output_path = archive_output_path.with_extension("zip");
-            compression::zip::generate_zip_with_progress(
-                paths_to_be_archived,
-                archive_output_path.into(),
-                args.clone(),
-            )
-            .await
-            .context("Failed to generate ZIP file")?;
-        }
-        CompressionFormat::TarZstd => {
-            let archive_output_path = archive_output_path.with_extension("tar.zst");
-            compression::zstd::generate_zstd_with_progress(
-                paths_to_be_archived,
-                archive_output_path,
-                args.clone(),
-            )
-            .await
-            .context("Failed to generate tar.zst file")?;
-        }
-    }
-
-    let addr = SocketAddr::from_str(&format!("{}:{}", args.bind, args.port))?;
+pub async fn run_server(
+    options: ServerOptions,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let addr = SocketAddr::from_str(&format!("{}:{}", options.bind, options.port))?;
     let listener = TcpListener::bind(addr).await?;
-    println!("\nHosting world files at {}/{}", addr, args.host_path);
-
-    let archive_output_path: Arc<PathBuf> = std::sync::Arc::new(archive_output_path.into());
-    let host_path = Arc::new(args.host_path);
-    let compression_format = args.compression_format;
+    println!("\nHosting world files at {}/{}", addr, options.host_path);
+    let path_to_archive = options.path_to_archive.expect("If this panics this is a bug.");
+    
+    let archive_output_path: Arc<PathBuf> = std::sync::Arc::new(path_to_archive);
+    let host_path = Arc::new(options.host_path);
     loop {
         let (stream, _) = listener.accept().await?;
         let io = TokioIo::new(stream);
@@ -68,7 +45,7 @@ pub async fn run_server(args: Args) -> Result<(), Box<dyn std::error::Error + Se
                                 req,
                                 &host_path.clone(),
                                 archive_output_path,
-                                compression_format,
+                                options.compression_format,
                             )
                             .await
                         }

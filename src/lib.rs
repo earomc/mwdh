@@ -1,11 +1,15 @@
-pub mod compression;
 pub mod cli;
+pub mod compression;
 pub mod server;
 
 use anyhow::{Context, Result};
 use clap::ValueEnum;
 use std::{
-    error, fmt::Display, path::{Path, PathBuf}, str::FromStr, sync::mpsc
+    error,
+    fmt::Display,
+    path::{Path, PathBuf},
+    str::FromStr,
+    sync::mpsc,
 };
 
 #[derive(Debug, Clone)]
@@ -47,7 +51,6 @@ pub enum CompressionFormat {
     TarZstd,
 }
 
-
 impl Display for CompressionFormat {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self {
@@ -56,7 +59,6 @@ impl Display for CompressionFormat {
         })
     }
 }
-
 
 impl FromStr for CompressionFormat {
     type Err = CompressionFormatParseError;
@@ -68,7 +70,6 @@ impl FromStr for CompressionFormat {
         }
     }
 }
-
 
 #[derive(Debug)]
 pub struct CompressionFormatParseError;
@@ -102,12 +103,25 @@ pub fn format_bytes(bytes: u64) -> String {
 }
 
 #[derive(Clone)]
-pub struct Args {
+pub enum MwdhOptions {
+    Server(ServerOptions),
+    Archive(ArchiveOptions),
+    Both {
+        server: ServerOptions,
+        archive: ArchiveOptions,
+    },
+}
+
+#[derive(Clone)]
+pub struct ArchiveOptions {
     /// Path to the minecraft server/saves directory that contains /world, /world_nether and /world_the_end
     pub world_path: String,
 
     /// Name of the world directory defined in server.properties if you're hosting a singleplayer world on a desktop system
     pub world_name: String,
+
+    /// Specify the name of the archive - Note: (mwdh will append a file-ending to it)
+    pub archive_name: String,
 
     /// Include the Nether dimension ("world_nether")
     pub include_nether: bool,
@@ -118,22 +132,8 @@ pub struct Args {
     /// Include the Overworld ("world")
     pub include_overworld: bool,
 
-    /// Specify the download file name - Note: (mwdh will append a file-ending to it)
-    pub download_file_name: String,
-
-    /// Host path from where to download the world files
-    pub host_path: String,
-
-    /// IP address to serve on
-    pub bind: String,
-
-    /// Port to serve on
-    pub port: u16,
-
-    /// Number of threads for file serving (0 = auto-detect)
-    pub server_threads: usize,
     /// Number of threads for parallel compression (0 = auto-detect)
-    pub compression_threads: usize,
+    pub threads: usize,
 
     /// The level of compression to apply. For zstd use -7 to 22, for zip use 0 to 9
     pub compression_level: i8,
@@ -144,26 +144,50 @@ pub struct Args {
     /// Whether or not the world format is Bukkit/Spigot/Paper-based. With those servers, the Nether and End dimensions are split up into their seperate directories (world_nether, world_the_end).
     /// If you're using a vanilla or Fabric server, dimensions will be inside of the world directory split up into DIM-1 (Nether) and DIM1 (The End).
     pub is_bukkit: bool, // TODO: Find out what format Forge or other loaders/servers use.
-    
+
     /// Limit in MB until the compression algorithm stores the compression intermediaries on disk in a temp directory.
     pub memory_limit_mb: u64,
 }
 
-pub fn paths_to_be_archived(args: &Args) -> Vec<PathBuf> {
+#[derive(Clone)]
+pub struct ServerOptions {
+    /// Host path from where to download the world files
+    pub host_path: String,
+
+    /// IP address to serve on
+    pub bind: String,
+
+    /// Port to serve on
+    pub port: u16,
+
+    /// Number of threads for file serving (0 = auto-detect)
+    pub threads: usize,
+
+    pub path_to_archive: Option<PathBuf>,
+    
+    /// Compression format used in the http header to signal to the browser what kind of data is downloaded.
+    pub compression_format: CompressionFormat,
+}
+
+pub fn paths_to_be_archived(args: &ArchiveOptions) -> Vec<PathBuf> {
     let base = PathBuf::from(&args.world_path);
 
     let mut paths_to_be_archived = Vec::with_capacity(3);
-    if args.include_overworld {
-        paths_to_be_archived.push(base.join("world"));
-    }
+    
     if args.is_bukkit {
+        if args.include_overworld {
+            paths_to_be_archived.push(base.join("world"));
+        }
         if args.include_nether {
             paths_to_be_archived.push(base.join("world_nether"));
         }
         if args.include_end {
             paths_to_be_archived.push(base.join("world_the_end"));
         }
-    } // else: if is not bukkit and nether and/or end are not included we need to skip DIM-1 and/or DIM1 directories later in the file collection.
+    } else {
+        paths_to_be_archived.push(base.join("world"));
+        // else: if is not bukkit and nether and/or end are not included we need to skip DIM-1 and/or DIM1 directories later in the file collection.
+    } 
     paths_to_be_archived
 }
 
@@ -171,7 +195,7 @@ pub fn collect_files_recursive(
     base_dir: &Path,
     archive_prefix: &str,
     all_files: &mut Vec<FileToCompress>,
-    args: &Args,
+    args: &ArchiveOptions,
     tx: &mpsc::Sender<ProgressMessage>,
 ) -> Result<()> {
     let mut stack = vec![(base_dir.to_path_buf(), archive_prefix.to_string())]; // current path, current zip path

@@ -3,13 +3,13 @@ use std::{path::{Path, PathBuf}, sync::mpsc};
 use anyhow::{Context, Result};
 use crossbeam::channel;
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
-use crate::{Args, FileToCompress, ProgressMessage, collect_files_recursive};
+use crate::{ArchiveOptions, FileToCompress, ProgressMessage, collect_files_recursive};
 use zip::{ZipWriter, write::SimpleFileOptions};
 
 pub async fn generate_zip_with_progress(
     paths_to_be_archived: Vec<PathBuf>,
     archive_output_path: PathBuf,
-    args: Args
+    args: ArchiveOptions
 ) -> Result<()> {
     let (tx, rx) = mpsc::channel();
 
@@ -148,7 +148,7 @@ pub fn generate_zip_blocking(
     paths_to_be_archived: Vec<PathBuf>,
     archive_output_path: PathBuf,
     tx: mpsc::Sender<ProgressMessage>,
-    args: Args
+    args: ArchiveOptions
 ) -> Result<()> {
     // First pass: count all files
     tx.send(ProgressMessage::StartScanning).ok();
@@ -192,7 +192,7 @@ pub fn generate_zip_blocking(
     let (result_tx, result_rx) = channel::unbounded::<Result<(usize, PathBuf)>>();
 
     // Spawn worker threads
-    let workers: Vec<_> = (0..args.compression_threads)
+    let workers: Vec<_> = (0..args.threads)
         .map(|worker_id| {
             let work_rx = work_rx.clone();
             let result_tx = result_tx.clone();
