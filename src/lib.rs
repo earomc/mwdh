@@ -144,6 +144,9 @@ pub struct Args {
     /// Whether or not the world format is Bukkit/Spigot/Paper-based. With those servers, the Nether and End dimensions are split up into their seperate directories (world_nether, world_the_end).
     /// If you're using a vanilla or Fabric server, dimensions will be inside of the world directory split up into DIM-1 (Nether) and DIM1 (The End).
     pub is_bukkit: bool, // TODO: Find out what format Forge or other loaders/servers use.
+    
+    /// Limit in MB until the compression algorithm stores the compression intermediaries on disk in a temp directory.
+    pub memory_limit_mb: u64,
 }
 
 pub fn paths_to_be_archived(args: &Args) -> Vec<PathBuf> {

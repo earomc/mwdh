@@ -111,5 +111,6 @@ pub fn parse_args(cli: Command) -> anyhow::Result<Args> {
         compression_level,
         compression_format,
         is_bukkit,
+        memory_limit_mb: 1024 // set to 1GB for now. TODO: Parse from CLI
     })
 }

@@ -1,14 +1,21 @@
-use std::{path::{Path, PathBuf}, sync::mpsc};
+use std::{
+    path::{Path, PathBuf},
+    sync::mpsc,
+};
 
+use crate::{Args, FileToCompress, ProgressMessage, collect_files_recursive};
 use anyhow::{Context, Result};
 use crossbeam::channel;
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
-use crate::{Args, FileToCompress, ProgressMessage, collect_files_recursive};
+
+enum MemoryManagerMessage {
+    RequestAllocation(u64, channel::Sender<bool>),
+}
 
 pub async fn generate_zstd_with_progress(
     paths_to_be_archived: Vec<PathBuf>,
     archive_output_path: PathBuf,
-    args: Args
+    args: Args,
 ) -> Result<()> {
     let (tx, rx) = mpsc::channel();
 
@@ -143,18 +150,21 @@ pub async fn generate_zstd_with_progress(
     Ok(())
 }
 
-#[derive(Clone)]
-struct ZstdCompressedFileData {
+struct CompressedFileData {
     file_name: String,
-    temp_file_path: PathBuf,
-    compressed_size: u64,
+    data: CompressedDataLocation,
+}
+
+enum CompressedDataLocation {
+    Memory(Vec<u8>),
+    Disk(PathBuf, u64), // path and size
 }
 
 pub fn generate_zstd_blocking(
     paths_to_be_archived: Vec<PathBuf>,
     archive_output_path: PathBuf,
     tx: mpsc::Sender<ProgressMessage>,
-    args: Args
+    args: Args,
 ) -> Result<()> {
     // First pass: count all files
     tx.send(ProgressMessage::StartScanning).ok();
@@ -185,7 +195,7 @@ pub fn generate_zstd_blocking(
     let total_files = all_files.len() as u64;
     tx.send(ProgressMessage::StartCompression(total_files)).ok();
 
-    // Second pass: compress files in parallel to temp files
+    // Second pass: compress files in parallel to temp files or memory
     let temp_dir = std::env::temp_dir().join(format!("mwdh_{}", std::process::id()));
     std::fs::create_dir_all(&temp_dir).context("Failed to create temp directory")?;
 
@@ -194,8 +204,26 @@ pub fn generate_zstd_blocking(
         let _ = std::fs::remove_dir_all(&temp_dir_clone);
     });
 
+    // Memory manager channel
+    let (mem_tx, mem_rx) = channel::unbounded::<MemoryManagerMessage>();
+    let memory_limit = args.memory_limit_mb * 1024 * 1024; // Convert MB to bytes
+
+    // Spawn memory manager thread
+    let mem_manager_handle = std::thread::spawn(move || {
+        let mut current_usage = 0u64;
+
+        while let Ok(msg) = mem_rx.recv() {
+            let MemoryManagerMessage::RequestAllocation(size, response_tx) = msg;
+            let can_allocate = current_usage + size <= memory_limit;
+            if can_allocate {
+                current_usage += size;
+            }
+            let _ = response_tx.send(can_allocate);
+        }
+    });
+
     let (work_tx, work_rx) = channel::unbounded::<(usize, FileToCompress)>();
-    let (result_tx, result_rx) = channel::unbounded::<Result<(usize, ZstdCompressedFileData)>>();
+    let (result_tx, result_rx) = channel::unbounded::<Result<(usize, CompressedFileData)>>();
 
     // Spawn worker threads
     let workers: Vec<_> = (0..args.compression_threads)
@@ -204,6 +232,7 @@ pub fn generate_zstd_blocking(
             let result_tx = result_tx.clone();
             let tx = tx.clone();
             let temp_dir = temp_dir.clone();
+            let mem_tx = mem_tx.clone();
 
             std::thread::Builder::new()
                 .name(format!("worker-{}", worker_id))
@@ -220,10 +249,14 @@ pub fn generate_zstd_blocking(
                             &temp_dir,
                             idx,
                             args.compression_level,
+                            &mem_tx,
                         );
 
-                        tx.send(ProgressMessage::FileCompressed(worker_id, file_info.file_name.clone()))
-                            .ok();
+                        tx.send(ProgressMessage::FileCompressed(
+                            worker_id,
+                            file_info.file_name.clone(),
+                        ))
+                        .ok();
 
                         if result_tx.send(result.map(|data| (idx, data))).is_err() {
                             break;
@@ -240,12 +273,13 @@ pub fn generate_zstd_blocking(
     }
     drop(work_tx);
     drop(result_tx);
+    drop(mem_tx); // Close memory manager channel
 
     // Collect results
-    let mut compressed_files = vec![None; all_files.len()];
+    let mut compressed_files = Vec::with_capacity(all_files.len());
     for result in result_rx {
-        let (idx, compressed_data) = result?;
-        compressed_files[idx] = Some(compressed_data);
+        let (_, data) = result?;
+        compressed_files.push(data);
     }
 
     // Wait for workers
@@ -253,39 +287,48 @@ pub fn generate_zstd_blocking(
         worker.join().ok();
     }
 
+    // Wait for memory manager
+    mem_manager_handle.join().ok();
+
     // Third pass: write all compressed files into a single tar.zst archive
     tx.send(ProgressMessage::StartWriting(all_files.len() as u64))
         .ok();
 
     let output_file = std::fs::File::create(&archive_output_path)?;
     let mut encoder = zstd::Encoder::new(output_file, 0)?; // Use fast compression for tar layer
-    
+
     let mut tar_builder = tar::Builder::new(&mut encoder);
 
-    for compressed_file_opt in compressed_files.iter() {
-        let compressed_file = compressed_file_opt
-            .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("Missing compressed file data"))?;
+    for compressed_file in compressed_files.iter() {
+        tx.send(ProgressMessage::WritingFile(
+            compressed_file.file_name.clone(),
+        ))
+        .ok();
 
-        tx.send(ProgressMessage::WritingFile(compressed_file.file_name.clone()))
-            .ok();
+        match &compressed_file.data {
+            CompressedDataLocation::Memory(data) => {
+                // Data is in memory - write directly
+                let mut header = tar::Header::new_gnu();
+                header.set_size(data.len() as u64);
+                header.set_mode(0o644);
+                header.set_cksum();
 
-        // Read compressed data from temp file
-        let mut temp_file = std::fs::File::open(&compressed_file.temp_file_path)?;
-        
-        // Create tar header for the compressed data
-        let mut header = tar::Header::new_gnu();
-        header.set_size(compressed_file.compressed_size);
-        header.set_mode(0o644);
-        header.set_cksum();
-        
-        // Add compressed data to tar with .zst extension
-        let archived_name = format!("{}.zst", compressed_file.file_name);
-        tar_builder.append_data(
-            &mut header,
-            &archived_name,
-            &mut temp_file
-        )?;
+                let archived_name = format!("{}.zst", compressed_file.file_name);
+                tar_builder.append_data(&mut header, &archived_name, &data[..])?;
+            }
+            CompressedDataLocation::Disk(temp_file_path, compressed_size) => {
+                // Data is on disk - read from temp file
+                let mut temp_file = std::fs::File::open(temp_file_path)?;
+
+                let mut header = tar::Header::new_gnu();
+                header.set_size(*compressed_size);
+                header.set_mode(0o644);
+                header.set_cksum();
+
+                let archived_name = format!("{}.zst", compressed_file.file_name);
+                tar_builder.append_data(&mut header, &archived_name, &mut temp_file)?;
+            }
+        }
     }
 
     tar_builder.finish()?;
@@ -306,22 +349,44 @@ fn compress_single_file_to_zstd(
     temp_dir: &Path,
     idx: usize,
     compression_level: i8,
-) -> Result<ZstdCompressedFileData> {
-    let temp_file_path = temp_dir.join(format!("file_{}.zst", idx));
-    let output_file = std::fs::File::create(&temp_file_path)?;
-    
-    let mut encoder = zstd::Encoder::new(output_file, compression_level as i32)?;
-    
+    mem_tx: &channel::Sender<MemoryManagerMessage>,
+) -> Result<CompressedFileData> {
+    // Compress to memory first
+    let mut compressed_data = Vec::new();
+    let mut encoder = zstd::Encoder::new(&mut compressed_data, compression_level as i32)?;
+
     let mut input_file = std::fs::File::open(&file_info.src_path)?;
     std::io::copy(&mut input_file, &mut encoder)?;
-    
     encoder.finish()?;
-    
-    let compressed_size = std::fs::metadata(&temp_file_path)?.len();
-    
-    Ok(ZstdCompressedFileData {
-        file_name: file_info.file_name.clone(),
-        temp_file_path,
-        compressed_size,
-    })
+
+    let compressed_size = compressed_data.len() as u64;
+
+    // Ask memory manager if we can keep this in memory (non-blocking)
+    let (response_tx, response_rx) = channel::bounded(1);
+    mem_tx
+        .send(MemoryManagerMessage::RequestAllocation(
+            compressed_size,
+            response_tx,
+        ))
+        .ok();
+
+    // Don't wait for response - check immediately if available
+    let can_keep_in_memory = response_rx.try_recv().unwrap_or(false);
+
+    if can_keep_in_memory {
+        // Keep in memory
+        Ok(CompressedFileData {
+            file_name: file_info.file_name.clone(),
+            data: CompressedDataLocation::Memory(compressed_data),
+        })
+    } else {
+        // Write to disk to free memory
+        let temp_file_path = temp_dir.join(format!("file_{}.zst", idx));
+        std::fs::write(&temp_file_path, &compressed_data)?;
+
+        Ok(CompressedFileData {
+            file_name: file_info.file_name.clone(),
+            data: CompressedDataLocation::Disk(temp_file_path, compressed_size),
+        })
+    }
 }
