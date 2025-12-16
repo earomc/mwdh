@@ -1,7 +1,7 @@
+use crate::{Args, CompressionFormat, compression, paths_to_be_archived};
 use anyhow::{Context, Result};
 use futures_util::TryStreamExt;
 use http_body_util::combinators::BoxBody;
-use crate::{Args, CompressionFormat, paths_to_be_archived, compression};
 use std::net::SocketAddr;
 use std::str::FromStr;
 use std::sync::Arc;
@@ -19,12 +19,12 @@ use tokio::net::TcpListener;
 
 pub async fn run_server(args: Args) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let archive_output_path = Path::new(&args.download_file_name);
-    let paths_2_be_archived = paths_to_be_archived(&args);
+    let paths_to_be_archived = paths_to_be_archived(&args);
     match args.compression_format {
         CompressionFormat::ZipDeflate => {
             let archive_output_path = archive_output_path.with_extension("zip");
             compression::zip::generate_zip_with_progress(
-                paths_2_be_archived,
+                paths_to_be_archived,
                 archive_output_path.into(),
                 args.clone(),
             )
@@ -32,8 +32,14 @@ pub async fn run_server(args: Args) -> Result<(), Box<dyn std::error::Error + Se
             .context("Failed to generate ZIP file")?;
         }
         CompressionFormat::TarZstd => {
-            let _archive_output_path = archive_output_path.with_extension("tar.zst");
-            todo!("not yet implemented")
+            let archive_output_path = archive_output_path.with_extension("tar.zst");
+            compression::zstd::generate_zstd_with_progress(
+                paths_to_be_archived,
+                archive_output_path,
+                args.clone(),
+            )
+            .await
+            .context("Failed to generate tar.zst file")?;
         }
     }
 

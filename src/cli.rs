@@ -38,7 +38,7 @@ pub fn create_cli() -> Command {
         .arg(Arg::new("server-threads").long("server-threads").help("Number of threads for parallel compression (0 = auto-detect)"))
         
         // http file serving
-        .arg(Arg::new("download-file-name").short('f').long("file-name").help("Specify the downloaded archive's file name - Note: (mwdh will append '.zip' or '.tar.zst' to it)"))
+        .arg(Arg::new("download-file-name").default_value("world").short('f').long("file-name").help("Specify the downloaded archive's file name - Note: (mwdh will append '.zip' or '.tar.zst' to it)"))
         .arg(Arg::new("bind").long("bind").default_value("0.0.0.0").help("IP address to serve the world download on"))
         .arg(Arg::new("port").short('p').long("port").value_parser(value_parser!(u16).range(1024..=65535)).help("What port to serve the world download on").default_value("3000"))
         .arg(Arg::new("host-path").short('H').long("host-path").default_value("world").help("Host path from where to download the world files"))
@@ -92,7 +92,7 @@ pub fn parse_args(cli: Command) -> anyhow::Result<Args> {
         .parse::<CompressionFormat>()?;
     let download_file_name = matches
         .get_one::<String>("download-file-name")
-        .unwrap_or(&format!("world.{}", compression_format.get_file_ending()))
+        .unwrap()
         .clone();
     let is_bukkit = matches.get_flag("bukkit");
 
