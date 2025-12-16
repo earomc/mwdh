@@ -36,18 +36,23 @@ And leveraging Rust and concurrent programming, you won't have to wait ages unti
 2. Run the ol' command:
    
    ```sh
-   mwdh -p <path-to-your-mc-server-directory> -ne
+   mwdh -w <path-to-your-mc-server-directory> -one
    ```
-   > -ne means 'include Nether and End'
+   > -one means 'include Overworld, Nether and End'
+   
+   Alternatively, make sure that your current working directory is the server directory containing the world directories and just do:
+   ```sh
+   mwdh -one
+   ```
 3. Once it says "Hosting world files at", open your webbrowser at ``<your-server-ip>:3000/world`` and it should download the file. ez peezy.    
 
 # Firewall Settings
 
 You may need to fiddle around with your proxy/firewall settings so that others can actually reach the port from the external network n stuff. An internet search "open firewall port on <your-distro>" might do the trick.
 
-> MWDH's default port number is 3000, but if you need to change that you easily can by passing the ``--port`` or ``-P`` argument:
+> MWDH's default port number is 3000, but if you need to change that you easily can by passing the ``--port`` or ``-p`` argument:
 ```sh
-mwdh [...] -P <port>
+mwdh [...] -p <port>
 ```
 
 ## Configuring UFW (uncomplicated firewall)

@@ -3,20 +3,19 @@ use std::{path::{Path, PathBuf}, sync::mpsc};
 use anyhow::{Context, Result};
 use crossbeam::channel;
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
-use crate::{FileToCompress, ProgressMessage, collect_files_recursive};
+use crate::{Args, FileToCompress, ProgressMessage, collect_files_recursive};
 use zip::{ZipWriter, write::SimpleFileOptions};
 
 pub async fn generate_zip_with_progress(
     paths_to_be_archived: Vec<PathBuf>,
     archive_output_path: PathBuf,
-    thread_count: usize,
-    compression_level: u32,
+    args: Args
 ) -> Result<()> {
     let (tx, rx) = mpsc::channel();
 
     // Spawn blocking task for ZIP creation
     let zip_handle = tokio::task::spawn_blocking(move || {
-        generate_zip_blocking(paths_to_be_archived, archive_output_path, tx, thread_count, compression_level)
+        generate_zip_blocking(paths_to_be_archived, archive_output_path, tx, args)
     });
 
     // Handle progress updates on main thread
@@ -149,8 +148,7 @@ pub fn generate_zip_blocking(
     paths_to_be_archived: Vec<PathBuf>,
     archive_output_path: PathBuf,
     tx: mpsc::Sender<ProgressMessage>,
-    thread_count: usize,
-    compression_level: u32,
+    args: Args
 ) -> Result<()> {
     // First pass: count all files
     tx.send(ProgressMessage::StartScanning).ok();
@@ -174,7 +172,7 @@ pub fn generate_zip_blocking(
             tx.send(ProgressMessage::FileFound(path.display().to_string()))
                 .ok();
         } else {
-            collect_files_recursive(path, &name, &mut all_files, &tx)?;
+            collect_files_recursive(path, &name, &mut all_files, &args, &tx)?;
         }
     }
 
@@ -194,7 +192,7 @@ pub fn generate_zip_blocking(
     let (result_tx, result_rx) = channel::unbounded::<Result<(usize, PathBuf)>>();
 
     // Spawn worker threads
-    let workers: Vec<_> = (0..thread_count)
+    let workers: Vec<_> = (0..args.compression_threads)
         .map(|worker_id| {
             let work_rx = work_rx.clone();
             let result_tx = result_tx.clone();
@@ -215,7 +213,7 @@ pub fn generate_zip_blocking(
                             &file_info,
                             &temp_dir,
                             idx,
-                            compression_level,
+                            args.compression_level,
                         );
 
                         tx.send(ProgressMessage::FileCompressed(worker_id, file_info.file_name.clone()))
@@ -290,7 +288,7 @@ pub fn compress_single_file_to_zip(
     file_info: &FileToCompress,
     temp_dir: &Path,
     idx: usize,
-    compression_level: u32,
+    compression_level: i8,
 ) -> Result<PathBuf> {
     let temp_zip_path = temp_dir.join(format!("file_{}.zip", idx));
     let temp_file = std::fs::File::create(&temp_zip_path)?;
