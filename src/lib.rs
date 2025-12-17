@@ -123,7 +123,7 @@ pub struct ArchiveOptions {
     /// Specify the name of the archive - Note: (mwdh will append a file-ending to it)
     pub archive_name: String,
 
-    /// Include the Nether dimension ("world_nether")
+    /// Include the Nether dimension
     pub include_nether: bool,
 
     /// Include the End dimension ("world_the_end")
@@ -176,16 +176,16 @@ pub fn paths_to_be_archived(args: &ArchiveOptions) -> Vec<PathBuf> {
     
     if args.is_bukkit {
         if args.include_overworld {
-            paths_to_be_archived.push(base.join("world"));
+            paths_to_be_archived.push(base.join(&args.world_name));
         }
         if args.include_nether {
-            paths_to_be_archived.push(base.join("world_nether"));
+            paths_to_be_archived.push(base.join(format!("{}_nether", args.world_name)));
         }
         if args.include_end {
-            paths_to_be_archived.push(base.join("world_the_end"));
+            paths_to_be_archived.push(base.join(format!("{}_the_end", args.world_name)));
         }
     } else {
-        paths_to_be_archived.push(base.join("world"));
+        paths_to_be_archived.push(base.join(&args.world_name));
         // else: if is not bukkit and nether and/or end are not included we need to skip DIM-1 and/or DIM1 directories later in the file collection.
     } 
     paths_to_be_archived
