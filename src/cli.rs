@@ -1,12 +1,9 @@
-use std::{
-    ffi::OsStr,
-    path::PathBuf,
-    str::FromStr,
-};
+use std::{ffi::OsStr, path::PathBuf, str::FromStr};
 
 use anyhow::{Context, Ok, anyhow};
 use clap::{
-    Arg, ArgAction, ArgMatches, Command, ValueHint, builder::ArgPredicate, crate_authors, crate_description, crate_name, crate_version, value_parser
+    Arg, ArgAction, ArgMatches, Command, ValueHint, builder::ArgPredicate, crate_authors,
+    crate_description, crate_name, crate_version, value_parser,
 };
 
 use crate::{ArchiveOptions, CompressionFormat, MwdhOptions, ServerOptions};
@@ -74,7 +71,9 @@ pub fn create_cli() -> Command {
                 .value_hint(ValueHint::FilePath)
                 .long("path-to-archive")
                 .short('a')
-                .help("Specify a path to an archive/world file that you already have laying around"),
+                .help(
+                    "Specify a path to an archive/world file that you already have laying around",
+                ),
         )
         .arg(
             Arg::new("server-threads")
@@ -84,8 +83,12 @@ pub fn create_cli() -> Command {
 
     let cmd = Command::new("compress-host")
         .visible_alias("ch")
-        .args(compress_cmd.get_arguments().skip_while(|arg| arg.get_id().as_str() == "path-to-archive"))
-        .args(host_cmd.get_arguments());
+        .args(compress_cmd.get_arguments())
+        .args(
+            host_cmd
+                .get_arguments()
+                .filter(|arg| arg.get_id().as_str() != "path-to-archive"),
+        );
 
     let cli = Command::new(crate_name!())
         .about(crate_description!())
@@ -106,7 +109,9 @@ fn parse_archive_args(matches: &ArgMatches) -> anyhow::Result<ArchiveOptions> {
     let include_overworld = matches.get_flag("include-overworld");
 
     if !(include_end || include_nether || include_overworld) {
-        return Err(anyhow!("You have to at least include one dimension. Try -o to include the overworld or check out `mwdh help c` for more"))
+        return Err(anyhow!(
+            "You have to at least include one dimension. Try -o to include the overworld or check out `mwdh help c` for more"
+        ));
     }
 
     let thread_count = matches.get_one::<String>("threads");
@@ -217,19 +222,11 @@ pub fn parse_args(cli: Command) -> anyhow::Result<MwdhOptions> {
             }
         }
         Some(("compress-host", matches)) => {
-            if let MwdhOptions::Both {
-                mut server,
-                archive,
-            } = parse_archive_host_args(matches)?
-            {
-                if server.path_to_archive.is_none() {
-                    server.path_to_archive = Some(
-                        PathBuf::from_str(&archive.archive_name)?
-                            .with_extension(archive.compression_format.get_file_ending()),
-                    )
-                } else {
-                    return Err(anyhow!("You cannot specify an archive path when using MWDH to archive. If you want to just host use `mwdh host`, else remove the archive-path argument"))
-                }
+            if let MwdhOptions::Both { mut server, archive } = parse_archive_host_args(matches)? {
+                server.path_to_archive = Some(
+                    PathBuf::from_str(&archive.archive_name)?
+                        .with_extension(archive.compression_format.get_file_ending()),
+                );
                 return Ok(MwdhOptions::Both { server, archive });
             }
             unreachable!()
