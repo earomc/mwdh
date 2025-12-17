@@ -1,5 +1,5 @@
 pub mod cli;
-pub mod compression;
+pub mod archive;
 pub mod server;
 
 use anyhow::{Context, Result};
@@ -15,7 +15,7 @@ use std::{
 #[derive(Debug, Clone)]
 pub enum ProgressMessage {
     StartScanning,
-    FileFound(String),
+    FileFound(String),             // File name
     StartCompression(u64),         // total files to compress
     Compressing(usize, String),    // worker_id, filename
     FileCompressed(usize, String), // worker_id, filename
@@ -226,10 +226,10 @@ pub fn collect_files_recursive(
                             .parent()
                             .and_then(|parent| parent.file_name())
                             .and_then(|file_name| file_name.to_str())
-                            .is_some_and(|file_name| file_name == args.world_name) // basically checks if parent dir is the world dir that contains the overworld. just looks crazy because of all the conversions and Options.
-                        && (entry.file_name() == "regions" || entry.file_name() == "entities" || entry.file_name() == "poi")
+                            .is_some_and(|file_name| dbg!(file_name) == args.world_name) // basically checks if parent dir is the world dir that contains the overworld. just looks crazy because of all the conversions and Options.
+                        && (entry.file_name() == "region" || entry.file_name() == "entities" || entry.file_name() == "poi")
                     {
-                        continue; // skip regions, entities and poi directories in the main world directory.
+                        continue; // skip region, entities and poi directories in the main world directory.
                     }
                 }
                 stack.push((path, child_zip_path));

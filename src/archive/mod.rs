@@ -1,9 +1,11 @@
 pub mod zip;
 pub mod zstd;
+pub mod progress;
 
-use crate::{ArchiveOptions, CompressionFormat, compression, paths_to_be_archived};
-use anyhow::Context;
-use std::{path::Path, process};
+use crate::{ArchiveOptions, CompressionFormat, FileToCompress, ProgressMessage, archive, collect_files_recursive, paths_to_be_archived};
+use anyhow::{Context, Result};
+use scopeguard::ScopeGuard;
+use std::{path::{Path, PathBuf}, process, sync::mpsc::Sender};
 
 fn print_archiving_info(options: &ArchiveOptions) {
     let path = Path::new(&options.world_path);
@@ -59,7 +61,7 @@ pub async fn do_compression(
     let paths_to_be_archived = paths_to_be_archived(&options);
     match options.compression_format {
         CompressionFormat::ZipDeflate => {
-            compression::zip::generate_zip_with_progress(
+            archive::zip::generate_zip_with_progress(
                 paths_to_be_archived,
                 archive_output_path.clone(),
                 options.clone(),
@@ -68,7 +70,7 @@ pub async fn do_compression(
             .context("Failed to generate ZIP file")?;
         }
         CompressionFormat::TarZstd => {
-            compression::zstd::generate_zstd_with_progress(
+            archive::zstd::generate_zstd_with_progress(
                 paths_to_be_archived,
                 archive_output_path.clone(),
                 options.clone(),
@@ -78,4 +80,47 @@ pub async fn do_compression(
         }
     }
     Ok(())
+}
+
+#[must_use]
+pub fn create_temp_dir() -> Result<(PathBuf, ScopeGuard<(), impl FnOnce(())>)> {
+    let temp_dir = std::env::temp_dir().join(format!("mwdh_{}", std::process::id()));
+    std::fs::create_dir_all(&temp_dir).context("Failed to create temp directory")?;
+    let temp_dir_clone = temp_dir.clone();
+    let cleanup_guard = scopeguard::guard((), move |_| {
+        let _ = std::fs::remove_dir_all(&temp_dir_clone);
+    });
+    Ok((temp_dir, cleanup_guard))
+}
+
+pub fn scan_files(tx: &Sender<ProgressMessage>, paths_to_be_archived: Vec<PathBuf>, args: &ArchiveOptions) -> Result<Vec<FileToCompress>> {
+    // Scan files
+    tx.send(ProgressMessage::StartScanning).ok();
+    let mut all_files = Vec::new();
+
+    for path in &paths_to_be_archived {
+        let name = path
+            .file_name()
+            .ok_or_else(|| anyhow::anyhow!("Invalid path: {}", path.display()))?
+            .to_string_lossy()
+            .to_string();
+
+        let meta = std::fs::metadata(path)
+            .with_context(|| format!("Failed to stat: {}", path.display()))?;
+
+        if meta.is_file() {
+            all_files.push(FileToCompress {
+                src_path: path.clone(),
+                file_name: name,
+            });
+            tx.send(ProgressMessage::FileFound(path.display().to_string()))
+                .ok();
+        } else {
+            collect_files_recursive(path, &name, &mut all_files, &args, &tx)?;
+        }
+    }
+
+    let total_files = all_files.len() as u64;
+    tx.send(ProgressMessage::StartCompression(total_files)).ok();
+    Ok(all_files)
 }
