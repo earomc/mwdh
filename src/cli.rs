@@ -2,7 +2,7 @@ use std::{ffi::OsStr, path::PathBuf, str::FromStr};
 
 use anyhow::{Context, Ok, anyhow};
 use clap::{
-    Arg, ArgAction, ArgGroup, ArgMatches, Command, ValueHint, builder::ArgPredicate, crate_authors, crate_description, crate_name, crate_version, value_parser
+    Arg, ArgAction, ArgMatches, Command, ValueHint, builder::ArgPredicate, crate_authors, crate_description, crate_name, crate_version, value_parser
 };
 
 use crate::{ArchiveOptions, CompressionFormat, MwdhOptions, ServerOptions};
