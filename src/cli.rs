@@ -13,7 +13,6 @@ pub fn create_cli() -> Command {
         .visible_alias("c")
         .arg(Arg::new("world-path")
             .help("Path to the minecraft server/saves directory that contains /world, /world_nether and /world_the_end")
-            .required(true)
             .value_hint(ValueHint::DirPath)
             .short('w')
             .long("world-path")
