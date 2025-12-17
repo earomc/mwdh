@@ -1,6 +1,6 @@
 [package]
 name = "mwdh"
-version = "0.2.0-dev"
+version = "0.2.0"
 edition = "2024"
 repository = "https://github.com/earomc/mwdh"
 description = "MWDH stands for \"Minecraft World Download Hoster\" and is an easy command line utility (CLI), Minecraft world file compressor and HTTP file server to provide a world download for your Minecraft server's world."
