@@ -22,7 +22,7 @@ pub async fn run_server(
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let addr = SocketAddr::from_str(&format!("{}:{}", options.bind, options.port))?;
     let listener = TcpListener::bind(addr).await?;
-    println!("\nHosting world files at {}/{}", addr, options.host_path);
+    println!("Hosting world files at {}/{}", addr, options.host_path);
     let path_to_archive = options.path_to_archive.expect("If this panics this is a bug.");
     
     let archive_output_path: Arc<PathBuf> = std::sync::Arc::new(path_to_archive);
