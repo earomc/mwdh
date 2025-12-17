@@ -2,8 +2,7 @@ use std::{ffi::OsStr, path::PathBuf, str::FromStr};
 
 use anyhow::{Context, Ok, anyhow};
 use clap::{
-    Arg, ArgAction, ArgMatches, Command, ValueHint, builder::ArgPredicate, crate_authors,
-    crate_description, crate_name, crate_version, value_parser,
+    Arg, ArgAction, ArgGroup, ArgMatches, Command, ValueHint, builder::ArgPredicate, crate_authors, crate_description, crate_name, crate_version, value_parser
 };
 
 use crate::{ArchiveOptions, CompressionFormat, MwdhOptions, ServerOptions};
@@ -40,8 +39,9 @@ pub fn create_cli() -> Command {
         .arg(Arg::new("compression-threads").long("compression-threads")
             .help("Number of threads for parallel compression. Setting this to 1 with zstd compression enables sequential mode which might offer better compression levels at the cost of slower speeds. (0 = auto-detect)"))
         .arg(Arg::new("file-name").default_value("world").short('f').long("file-name")
-            .help("Specify the downloaded archive's file name WITHOUT the file extension - mwdh will append '.zip' or '.tar.zst' to it"));
-
+            .help("Specify the downloaded archive's file name WITHOUT the file extension - mwdh will append '.zip' or '.tar.zst' to it"))
+        .arg(Arg::new("memory-limit-mb").long("memory-limit-mb").default_value("512").help("Limit in mebibytes until the compression algorithm stores the compression intermediaries (batches) on disk in a temp directory. Only does something when using zstd atm"));
+        
     let host_cmd = Command::new("host")
         .visible_alias("h")
         .arg(
@@ -136,6 +136,8 @@ fn parse_archive_args(matches: &ArgMatches) -> anyhow::Result<ArchiveOptions> {
         .parse::<CompressionFormat>()?;
     let archive_name = matches.get_one::<String>("file-name").unwrap().clone();
     let is_bukkit = matches.get_flag("bukkit");
+    
+    let memory_limit_mb = matches.get_one::<String>("memory-limit-mb").unwrap().parse()?;
 
     Ok(ArchiveOptions {
         world_path,
@@ -148,7 +150,7 @@ fn parse_archive_args(matches: &ArgMatches) -> anyhow::Result<ArchiveOptions> {
         compression_level,
         compression_format,
         is_bukkit,
-        memory_limit_mb: 512, // set to 512MiB for now. TODO: Parse from CLI // TODO: Add this as an option
+        memory_limit_mb,
     })
 }
 
