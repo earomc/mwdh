@@ -6,8 +6,7 @@ use std::{
 
 use anyhow::{Context, Ok, anyhow};
 use clap::{
-    Arg, ArgAction, ArgMatches, Command, builder::ArgPredicate, crate_authors, crate_description,
-    crate_name, crate_version, value_parser,
+    Arg, ArgAction, ArgMatches, Command, ValueHint, builder::ArgPredicate, crate_authors, crate_description, crate_name, crate_version, value_parser
 };
 
 use crate::{ArchiveOptions, CompressionFormat, MwdhOptions, ServerOptions};
@@ -17,18 +16,21 @@ pub fn create_cli() -> Command {
         .visible_alias("c")
         .arg(Arg::new("world-path")
             .help("Path to the minecraft server/saves directory that contains /world, /world_nether and /world_the_end")
+            .required(true)
+            .value_hint(ValueHint::DirPath)
             .short('w')
             .long("world-path")
             .default_value(".") // current dir
             .num_args(1) // TODO: test if num_args is needed
         )
         .arg(Arg::new("world-name").help("The name of the world directory (or the prefix of the directories in the case of the bukkit world format)").short('N').long("world-name").default_value("world"))
-        .arg(Arg::new("include-nether").short('n').long("include-nether").action(ArgAction::SetTrue))
-        .arg(Arg::new("include-end").short('e').long("include-end").action(ArgAction::SetTrue))
-        .arg(Arg::new("include-overworld").short('o').long("include-overworld").action(ArgAction::SetTrue))
-        .arg(Arg::new("bukkit").long("bukkit").action(ArgAction::SetTrue))
-        .arg(Arg::new("compression-format").default_value("zstd").short('F').long("compression-format")) // TODO: maybe put compression into one argument
-        .arg(Arg::new("compression-level").short('l').long("compression-level").help("For zstd use -7 to 22, for zip use 0 to 9 [defaults: zstd: -7, zip: 6]")
+        .arg(Arg::new("include-nether").help("Include the Nether dimension to your archive").short('n').long("include-nether").action(ArgAction::SetTrue))
+        .arg(Arg::new("include-end").help("Include the End dimension to your archive").short('e').long("include-end").action(ArgAction::SetTrue))
+        .arg(Arg::new("include-overworld").help("Include the Overworld dimension to your archive").short('o').long("include-overworld").action(ArgAction::SetTrue))
+        .arg(Arg::new("bukkit").help("Considers bukkit-based Minecraft server's world directory structure (world, world-nether, world-the-end)").long("bukkit").action(ArgAction::SetTrue))
+        .arg(Arg::new("compression-format").help("Sets the compression format used. (zstd or zip)").default_value("zstd").short('F').long("compression-format")) // TODO: maybe put compression into one argument
+        .arg(Arg::new("compression-level").short('l').long("compression-level")
+            .help("Sets the compression level. Lower levels are usually faster, higher levels slower, but may offer better compression ratios (smaller archive sizes). For zstd use -7 to 22, for zip use 0 to 9 [defaults: zstd: -7, zip: 6]")
             .default_value_ifs( // sets default values for the compression-level depending on which compression format was specified
                 [
                     ("compression-format", ArgPredicate::Equals("zstd".into()), "-7"), // when using zstd, optimizing for speed by default
@@ -37,9 +39,12 @@ pub fn create_cli() -> Command {
             )
             .value_parser(value_parser!(i8).range(-7..=22)) // zstd compression levels go from -7 to 22
         )
-        .arg(Arg::new("threads").short('t').long("threads").default_value("0").help("Number of threads for parallel compression and file serving (0 = auto-detect). Will override compression-threads and server-threads arguments"))
-        .arg(Arg::new("compression-threads").long("compression-threads").help("Number of threads for parallel compression (0 = auto-detect)"))
-        .arg(Arg::new("file-name").default_value("world").short('f').long("file-name").help("Specify the downloaded archive's file name WITHOUT the file extension - mwdh will append '.zip' or '.tar.zst' to it"));
+        .arg(Arg::new("threads").short('t').long("threads").default_value("0")
+            .help("Number of threads for parallel compression and file serving (0 = auto-detect). Will override compression-threads and server-threads arguments"))
+        .arg(Arg::new("compression-threads").long("compression-threads")
+            .help("Number of threads for parallel compression. Setting this to 1 with zstd compression enables sequential mode which might offer better compression levels at the cost of slower speeds. (0 = auto-detect)"))
+        .arg(Arg::new("file-name").default_value("world").short('f').long("file-name")
+            .help("Specify the downloaded archive's file name WITHOUT the file extension - mwdh will append '.zip' or '.tar.zst' to it"));
 
     let host_cmd = Command::new("host")
         .visible_alias("h")
@@ -66,9 +71,10 @@ pub fn create_cli() -> Command {
         )
         .arg(
             Arg::new("path-to-archive")
+                .value_hint(ValueHint::FilePath)
                 .long("path-to-archive")
                 .short('a')
-                .help("Specify a path to an archive/world file that you already have ready"),
+                .help("Specify a path to an archive/world file that you already have laying around"),
         )
         .arg(
             Arg::new("server-threads")
@@ -78,7 +84,7 @@ pub fn create_cli() -> Command {
 
     let cmd = Command::new("compress-host")
         .visible_alias("ch")
-        .args(compress_cmd.get_arguments())
+        .args(compress_cmd.get_arguments().skip_while(|arg| arg.get_id().as_str() == "path-to-archive"))
         .args(host_cmd.get_arguments());
 
     let cli = Command::new(crate_name!())
@@ -102,7 +108,7 @@ fn parse_archive_args(matches: &ArgMatches) -> anyhow::Result<ArchiveOptions> {
     if !(include_end || include_nether || include_overworld) {
         return Err(anyhow!("You have to at least include one dimension. Try -o to include the overworld or check out `mwdh help c` for more"))
     }
-    
+
     let thread_count = matches.get_one::<String>("threads");
 
     let mut compression_threads = match matches.get_one::<String>("compression-threads") {
