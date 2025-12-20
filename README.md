@@ -74,7 +74,7 @@ mwdh compress -w <server-dir> -l=-3
 ```
 Note that to pass a negative compression level (which is used by the zstd algorithm) we have to add a little `=` behind the `-l` argument. You can also omit the compression level to let MWDH choose a default.
 
-# Firewall Setting
+# Firewall Settings
 You may need to fiddle around with your proxy/firewall settings so that others can actually reach the port from the external network n stuff. An internet search "open firewall port on <your-distro>" might do the trick.
 
 MWDH's default port number is 3000, but if you need to change that you easily can by passing the `--port` or `-p` argument:
